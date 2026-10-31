@@ -56,7 +56,7 @@ def main() -> None:
 
     for density, size in legacy_sizes.items():
         icon = Image.new("RGBA", (size, size), WHITE)
-        inner = int(size * 0.95)
+        inner = int(size * 0.82)
         icon.alpha_composite(
             mark.resize((inner, inner), Image.Resampling.LANCZOS),
             ((size - inner) // 2, (size - inner) // 2),
@@ -65,7 +65,7 @@ def main() -> None:
 
     for density, size in foreground_sizes.items():
         foreground = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-        inner = int(size * 1.02)
+        inner = int(size * 0.68)
         foreground.alpha_composite(
             mark.resize((inner, inner), Image.Resampling.LANCZOS),
             ((size - inner) // 2, (size - inner) // 2),
