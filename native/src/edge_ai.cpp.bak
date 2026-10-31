@@ -1,0 +1,437 @@
+#include "llama.h"
+#include "ggml-backend.h"
+#include "ggml.h"
+
+#include <android/log.h>
+#include <sys/system_properties.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
+#include <random>
+#include <string>
+#include <vector>
+
+#define LOG_TAG "EdgeAI"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+namespace {
+
+constexpr int kMaxPromptLimit = 32 * 1024;
+
+void log_callback(enum ggml_log_level level, const char * text, void * /*user_data*/) {
+    int prio = ANDROID_LOG_INFO;
+    if (level == GGML_LOG_LEVEL_ERROR) prio = ANDROID_LOG_ERROR;
+    else if (level == GGML_LOG_LEVEL_WARN) prio = ANDROID_LOG_WARN;
+    else if (level == GGML_LOG_LEVEL_DEBUG) prio = ANDROID_LOG_DEBUG;
+    __android_log_write(prio, "llama", text);
+}
+
+bool is_mediatek_soc() {
+    char manufacturer[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("ro.soc.manufacturer", manufacturer) > 0) {
+        if (std::strstr(manufacturer, "Mediatek") != nullptr ||
+            std::strstr(manufacturer, "MediaTek") != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void set_error(char * err, int err_len, const char * msg) {
+    if (err && err_len > 0) {
+        std::snprintf(err, static_cast<size_t>(err_len), "%s", msg);
+    }
+}
+
+std::string dev_label(ggml_backend_dev_t dev) {
+    const char * name = ggml_backend_dev_name(dev);
+    const char * desc = ggml_backend_dev_description(dev);
+    const char * type = "other";
+    switch (ggml_backend_dev_type(dev)) {
+        case GGML_BACKEND_DEVICE_TYPE_CPU:  type = "cpu";  break;
+        case GGML_BACKEND_DEVICE_TYPE_GPU:  type = "gpu";  break;
+        case GGML_BACKEND_DEVICE_TYPE_IGPU: type = "igpu"; break;
+        case GGML_BACKEND_DEVICE_TYPE_ACCEL:type = "accel";break;
+        default: break;
+    }
+    std::string out = name ? name : "unknown";
+    out += ": ";
+    out += desc ? desc : "unknown";
+    out += " [";
+    out += type;
+    out += "]";
+    return out;
+}
+
+std::string device_list() {
+    std::string out;
+    const size_t count = ggml_backend_dev_count();
+    for (size_t i = 0; i < count; ++i) {
+        if (!out.empty()) out += ", ";
+        out += dev_label(ggml_backend_dev_get(i));
+    }
+    return out;
+}
+
+std::string active_device(int n_gpu_layers) {
+    const size_t count = ggml_backend_dev_count();
+    for (size_t i = 0; i < count; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const auto type = ggml_backend_dev_type(dev);
+        const bool gpu = type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+        if (n_gpu_layers > 0 && gpu) {
+            return dev_label(dev);
+        }
+        if (n_gpu_layers <= 0 && type == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return dev_label(dev);
+        }
+    }
+    return device_list();
+}
+
+} // namespace
+
+struct edge_ai_context {
+    llama_model * model = nullptr;
+    llama_context * ctx = nullptr;
+    llama_sampler * sampler = nullptr;
+    const llama_vocab * vocab = nullptr;
+
+    std::string backend;
+    std::atomic<bool> cancel{false};
+    bool busy = false;
+    bool done = true;
+
+    int n_ctx = 0;
+    int n_gpu_layers = 0;
+    int n_max_tokens = 0;
+    int n_generated = 0;
+
+    double load_ms = 0.0;
+    double prefill_ms = 0.0;
+    double decode_ms = 0.0;
+    std::chrono::steady_clock::time_point last_sample_time;
+};
+
+extern "C" {
+
+__attribute__((visibility("default")))
+edge_ai_context * edge_ai_create(const char * model_path,
+                                 int n_gpu_layers,
+                                 int n_ctx,
+                                 int n_threads,
+                                 char * err, int err_len) {
+    if (!model_path || model_path[0] == '\0') {
+        set_error(err, err_len, "model path is empty");
+        return nullptr;
+    }
+
+    static std::once_flag backend_once;
+    std::call_once(backend_once, [] {
+        // Mali's KHR_coopmat path is ~3x slower than the scalar path for Q6_K
+        // prefill on this class of device. Keep an explicit user override.
+        if (is_mediatek_soc() && std::getenv("GGML_VK_DISABLE_COOPMAT") == nullptr) {
+            setenv("GGML_VK_DISABLE_COOPMAT", "1", 0);
+            LOGI("MediaTek GPU detected: GGML_VK_DISABLE_COOPMAT=1");
+        }
+        llama_log_set(log_callback, nullptr);
+        llama_backend_init();
+        LOGI("llama.cpp %s", llama_version());
+        LOGI("backends: %s", device_list().c_str());
+    });
+
+    auto * h = new edge_ai_context();
+    h->backend = active_device(n_gpu_layers);
+    h->n_gpu_layers = n_gpu_layers;
+
+    const auto t0 = std::chrono::steady_clock::now();
+
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = n_gpu_layers;
+    mparams.main_gpu = 0;
+    mparams.split_mode = LLAMA_SPLIT_MODE_NONE;
+    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
+
+    static ggml_backend_dev_t cpu_only_devices[2] = {nullptr, nullptr};
+    if (n_gpu_layers <= 0) {
+        cpu_only_devices[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (cpu_only_devices[0] != nullptr) {
+            mparams.devices = cpu_only_devices;
+        }
+    }
+    mparams.progress_callback = [](float progress, void * /*ud*/) {
+        static int last = -1;
+        int pct = static_cast<int>(progress * 100.0f);
+        if (pct / 10 != last) {
+            last = pct / 10;
+            LOGI("model load %d%%", pct);
+        }
+        return true;
+    };
+
+    LOGI("loading model: %s (ngl=%d)", model_path, n_gpu_layers);
+    h->model = llama_model_load_from_file(model_path, mparams);
+    if (!h->model) {
+        set_error(err, err_len, "failed to load model (see logcat)");
+        delete h;
+        return nullptr;
+    }
+
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx = static_cast<uint32_t>(n_ctx > 0 ? n_ctx : 2048);
+    cparams.n_batch = 512;
+    cparams.n_ubatch = 512;
+    cparams.n_threads = n_threads > 0 ? n_threads : 4;
+    cparams.n_threads_batch = cparams.n_threads;
+    cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
+    cparams.offload_kqv = true;
+    cparams.op_offload = true;
+    if (n_gpu_layers <= 0) {
+        cparams.offload_kqv = false;
+        cparams.op_offload = false;
+    }
+    cparams.no_perf = true;
+
+    h->ctx = llama_init_from_model(h->model, cparams);
+    if (!h->ctx) {
+        set_error(err, err_len, "failed to create context (out of memory?)");
+        llama_model_free(h->model);
+        delete h;
+        return nullptr;
+    }
+
+    h->vocab = llama_model_get_vocab(h->model);
+    h->n_ctx = static_cast<int>(llama_n_ctx(h->ctx));
+    h->done = true;
+
+    if (n_gpu_layers > 0) {
+        const auto w0 = std::chrono::steady_clock::now();
+        llama_token warm_token = 0;
+        if (llama_tokenize(h->vocab, "Hello", 5, &warm_token, 1, false, false) <= 0) {
+            warm_token = 0;
+        }
+        const int warm_n = std::min(128, h->n_ctx);
+        std::vector<llama_token> warm(static_cast<size_t>(warm_n), warm_token);
+        bool warm_ok = true;
+        for (int i = 0; i < warm_n; i += 512) {
+            llama_batch batch = llama_batch_get_one(warm.data() + i, std::min(512, warm_n - i));
+            if (llama_decode(h->ctx, batch) != 0) {
+                warm_ok = false;
+                break;
+            }
+        }
+        llama_synchronize(h->ctx);
+        llama_memory_clear(llama_get_memory(h->ctx), true);
+        const auto w1 = std::chrono::steady_clock::now();
+        LOGI("warmup prefill %d tokens: %.0f ms (%s)", warm_n,
+             std::chrono::duration<double, std::milli>(w1 - w0).count(),
+             warm_ok ? "ok" : "failed");
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    h->load_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    LOGI("model ready: ctx=%d, load=%.0f ms, gpu_offload=%d, backend=%s",
+         h->n_ctx, h->load_ms, llama_supports_gpu_offload(), h->backend.c_str());
+    return h;
+}
+
+__attribute__((visibility("default")))
+void edge_ai_free(edge_ai_context * h) {
+    if (!h) return;
+    if (h->sampler) llama_sampler_free(h->sampler);
+    if (h->ctx) llama_free(h->ctx);
+    if (h->model) llama_model_free(h->model);
+    delete h;
+}
+
+__attribute__((visibility("default")))
+void edge_ai_backend(edge_ai_context * h, char * out, int out_len) {
+    if (!h || !out || out_len <= 0) return;
+    std::snprintf(out, static_cast<size_t>(out_len), "%s", h->backend.c_str());
+}
+
+__attribute__((visibility("default")))
+void edge_ai_model_desc(edge_ai_context * h, char * out, int out_len) {
+    if (!h || !out || out_len <= 0) return;
+    char desc[256] = {0};
+    llama_model_desc(h->model, desc, sizeof(desc));
+    std::snprintf(out, static_cast<size_t>(out_len), "%s", desc);
+}
+
+__attribute__((visibility("default")))
+int edge_ai_model_params(edge_ai_context * h, char * out, int out_len) {
+    if (!h || !out || out_len <= 0) return 0;
+    std::snprintf(out, static_cast<size_t>(out_len),
+                  "params=%lld|size_mb=%.0f|ctx=%d|ngl=%d|gpu_offload=%d",
+                  static_cast<long long>(llama_model_n_params(h->model)),
+                  llama_model_size(h->model) / 1024.0 / 1024.0,
+                  h->n_ctx,
+                  h->n_gpu_layers,
+                  llama_supports_gpu_offload() ? 1 : 0);
+    return 1;
+}
+
+__attribute__((visibility("default")))
+int edge_ai_start(edge_ai_context * h,
+                  const char * prompt,
+                  int max_tokens,
+                  float temperature,
+                  float top_p,
+                  int top_k,
+                  float repeat_penalty,
+                  char * err, int err_len) {
+    if (!h || !prompt) {
+        set_error(err, err_len, "invalid handle");
+        return -1;
+    }
+    if (h->busy) {
+        set_error(err, err_len, "generation already running");
+        return -1;
+    }
+
+    const int prompt_len = static_cast<int>(std::strlen(prompt));
+    if (prompt_len <= 0 || prompt_len > kMaxPromptLimit) {
+        set_error(err, err_len, "prompt length out of range");
+        return -1;
+    }
+
+    h->cancel = false;
+    h->done = false;
+    h->n_generated = 0;
+    h->n_max_tokens = max_tokens > 0 ? max_tokens : 256;
+    h->prefill_ms = 0.0;
+    h->decode_ms = 0.0;
+
+    llama_memory_clear(llama_get_memory(h->ctx), true);
+
+    int need = llama_tokenize(h->vocab, prompt, prompt_len, nullptr, 0, false, true);
+    if (need < 0) {
+        need = -need;
+    }
+    if (need <= 0) {
+        set_error(err, err_len, "failed to tokenize prompt");
+        h->done = true;
+        return -1;
+    }
+    if (need + h->n_max_tokens > h->n_ctx) {
+        set_error(err, err_len, "prompt does not fit in context");
+        h->done = true;
+        return -1;
+    }
+
+    std::vector<llama_token> tokens(static_cast<size_t>(need));
+    const int got = llama_tokenize(h->vocab, prompt, prompt_len, tokens.data(), need, false, true);
+    if (got <= 0) {
+        set_error(err, err_len, "failed to tokenize prompt");
+        h->done = true;
+        return -1;
+    }
+    tokens.resize(static_cast<size_t>(got));
+
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < got; i += 512) {
+        const int n = std::min(512, got - i);
+        llama_batch batch = llama_batch_get_one(tokens.data() + i, n);
+        if (llama_decode(h->ctx, batch) != 0) {
+            set_error(err, err_len, "prompt decode failed");
+            h->done = true;
+            return -1;
+        }
+    }
+    llama_synchronize(h->ctx);
+    const auto t1 = std::chrono::steady_clock::now();
+    h->prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    if (h->sampler) {
+        llama_sampler_free(h->sampler);
+        h->sampler = nullptr;
+    }
+    h->sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(h->sampler,
+        llama_sampler_init_penalties(llama_vocab_n_tokens(h->vocab), 64, repeat_penalty, 0.0f, 0.0f));
+    llama_sampler_chain_add(h->sampler, llama_sampler_init_top_k(top_k > 0 ? top_k : 40));
+    llama_sampler_chain_add(h->sampler, llama_sampler_init_top_p(top_p > 0.f ? top_p : 0.95f, 1));
+    llama_sampler_chain_add(h->sampler, llama_sampler_init_min_p(0.05f, 1));
+    llama_sampler_chain_add(h->sampler, llama_sampler_init_temp(temperature > 0.f ? temperature : 0.7f));
+    llama_sampler_chain_add(h->sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+    h->busy = true;
+    h->last_sample_time = std::chrono::steady_clock::now();
+    LOGI("prompt: %d tokens, prefill %.0f ms", got, h->prefill_ms);
+    return got;
+}
+
+__attribute__((visibility("default")))
+int edge_ai_next(edge_ai_context * h, char * out, int out_len) {
+    if (!h || !out || out_len <= 0 || !h->busy || h->done) return 0;
+
+    int loops = 0;
+    while (loops++ < 32) {
+        if (h->cancel.load()) {
+            h->done = true;
+            h->busy = false;
+            return 0;
+        }
+        if (h->n_generated >= h->n_max_tokens) {
+            h->done = true;
+            h->busy = false;
+            return 0;
+        }
+
+        const llama_token id = llama_sampler_sample(h->sampler, h->ctx, -1);
+        const auto sample_time = std::chrono::steady_clock::now();
+        h->decode_ms += std::chrono::duration<double, std::milli>(sample_time - h->last_sample_time).count();
+        h->last_sample_time = sample_time;
+        if (llama_vocab_is_eog(h->vocab, id)) {
+            h->done = true;
+            h->busy = false;
+            return 0;
+        }
+
+        char piece[512];
+        int n = llama_token_to_piece(h->vocab, id, piece, sizeof(piece), 0, false);
+        if (n < 0) {
+            n = 0;
+        }
+
+        llama_batch batch = llama_batch_get_one(const_cast<llama_token *>(&id), 1);
+        if (llama_decode(h->ctx, batch) != 0) {
+            h->done = true;
+            h->busy = false;
+            return -1;
+        }
+        h->n_generated++;
+
+        if (n > 0) {
+            const int copy = std::min(n, out_len);
+            std::memcpy(out, piece, static_cast<size_t>(copy));
+            return copy;
+        }
+    }
+    return 0;
+}
+
+__attribute__((visibility("default")))
+void edge_ai_cancel(edge_ai_context * h) {
+    if (h) h->cancel = true;
+}
+
+__attribute__((visibility("default")))
+int edge_ai_stats(edge_ai_context * h, char * out, int out_len) {
+    if (!h || !out || out_len <= 0) return 0;
+    const double tok_s = h->decode_ms > 0.0 ? (h->n_generated * 1000.0 / h->decode_ms) : 0.0;
+    std::snprintf(out, static_cast<size_t>(out_len),
+                  "load_ms=%.0f|prefill_ms=%.0f|decode_ms=%.0f|tokens=%d|tok_s=%.2f|ctx=%d|backend=%s",
+                  h->load_ms, h->prefill_ms, h->decode_ms, h->n_generated, tok_s,
+                  h->n_ctx, h->backend.c_str());
+    return 1;
+}
+
+} // extern "C"

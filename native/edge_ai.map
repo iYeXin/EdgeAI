@@ -1,0 +1,6 @@
+{
+  global:
+    edge_ai_*;
+  local:
+    *;
+};

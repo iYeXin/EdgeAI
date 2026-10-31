@@ -1,0 +1,128 @@
+name: Release APK
+
+# Ordinary branch pushes do NOT trigger this workflow.
+# Run it manually, or push a version tag such as v0.1.0.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (tag name, e.g. v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+  FLUTTER_VERSION: '3.47.8'
+  NDK_VERSION: '28.2.13676358'
+  ANDROID_API: '36'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: >-
+            platforms;android-${{ env.ANDROID_API }}
+            build-tools;36.0.0
+            ndk;${{ env.NDK_VERSION }}
+            cmake;4.1.2
+
+      - name: Install Linux native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build glslang-tools libvulkan-dev spirv-headers cmake
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install Dart/Flutter dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Analyze and test
+        working-directory: app
+        run: |
+          flutter analyze
+          flutter test
+
+      - name: Build arm64 native library
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: bash scripts/build_native_android_linux.sh arm64-v8a
+
+      - name: Build arm64 APK
+        working-directory: app
+        run: |
+          flutter build apk --release \
+            --target-platform android-arm64 \
+            --build-name="${RELEASE_VERSION#v}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+          mkdir -p ../dist
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            ../dist/edge-ai-arm64.apk
+
+      - name: Build x86_64 native library
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: bash scripts/build_native_android_linux.sh x86_64
+
+      - name: Build x86_64 APK
+        working-directory: app
+        run: |
+          flutter build apk --release \
+            --target-platform android-x64 \
+            --build-name="${RELEASE_VERSION#v}" \
+            --build-number="${GITHUB_RUN_NUMBER}"
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            ../dist/edge-ai-x86_64.apk
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-ai-apks
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: Edge AI ${{ env.RELEASE_VERSION }}
+          files: |
+            dist/edge-ai-arm64.apk
+            dist/edge-ai-x86_64.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
