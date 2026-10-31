@@ -7,6 +7,15 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 - 原生 C ABI：**v5**
 - 构建目标：**arm64-v8a**（真机）、**x86_64**（模拟器）
 
+## 核心亮点
+
+- **完全离线**：模型、推理、会话与 KV state 均保存在设备本地。
+- **Vulkan + CPU 双后端**：同一套 native ABI，运行时切换；Mali-G925 上 Qwen3-1.7B Q6_K 解码约 23 tok/s。
+- **长会话可恢复**：真机 1671 token 历史命中 1265 token 前缀，冷启动 prefill 从约 19 s 降到约 5 s。
+- **32k 上下文 + 自适应内存**：按当前可用内存选 ctx，低内存自动降级，加载前做模型 + KV + headroom 准入。
+- **真正的会话树**：消息以 `id/parentId` 持久化，编辑与重新生成创建分支，历史节点保留。
+- **多模态与模型管理**：GGUF + `mmproj`、多图、ModelScope/HF 搜索、分片下载、SHA256、Token。
+
 ## 1. 项目状态
 
 | 项目 | 说明 |
@@ -32,21 +41,11 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 - **模型**：本地模型、Hub 搜索、下载队列、Token、分片、SHA256
 - **设置**：推理参数、KV 缓存、功耗显示
 
-模型在后台加载，不阻塞模型页与设置页；长会话启动后会预加载当前 state。
+模型在后台加载，模型页与设置页保持可用；长会话启动后会预加载当前 state。
 
-![应用外壳](screenshots/ui-shell.png)
+![聊天与模型管理](screenshots/overview-wide.png)
 
-![聊天界面](screenshots/ui-chat.png)
-
-![思考内容](screenshots/191_thinking_ref.png)
-
-![模型页](screenshots/ui-models.png)
-
-![设置页](screenshots/ui-settings.png)
-
-![Markdown](screenshots/ui-markdown.png)
-
-![会话树](screenshots/ui-tree.png)
+*左：聊天与思考内容；右：本地模型管理。*
 
 ## 3. 功能说明
 
@@ -55,20 +54,19 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 - 消息以扁平树持久化：每个节点保存 `id` 与 `parentId`，会话保存 `activeLeafId`
 - 编辑用户消息时，在同一父节点下创建新分支
 - 重新生成时，在同一提问下创建 assistant 兄弟节点
-- 切换分支不删除历史；旧版线性会话自动迁移为扁平树
-- 助手消息操作：复制、编辑、重新生成、切换分支
-- 用户消息通过长按打开同一组操作
+- 切换分支时保留历史节点；旧版线性会话自动迁移为扁平树
+- 长按任意消息打开操作：复制、编辑、重新生成、切换分支
 - 消息文本可选中复制；助手 Markdown 渲染，用户输入保持纯文本
-- 编辑/重新生成会重新标记 assistant 为 streaming，避免流式事件被丢弃
+- 编辑/重新生成会重新标记 assistant 为 streaming，确保流式事件写入对应节点
 
 ### 3.2 思考模式
 
-聊天页模型栏右侧提供独立的「思考」开关，不依赖设置页。
+聊天页模型栏右侧提供独立的「思考」开关，状态保存到会话索引。
 
 - 通过 native Jinja `enable_thinking` 传给模型 chat template
-- 仅对支持该参数的模型/模板生效
+- 适用于支持该参数的模型/模板
 - 开关状态保存到 `sessions.json`
-- 生成期间输入框仍可用，仅发送按钮切换为停止
+- 生成期间输入框保持可用，发送按钮切换为停止
 - Enter 插入换行，发送使用输入框右侧按钮
 
 输出中的常见思考标记会被自动识别：
@@ -84,7 +82,7 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 - 生成中显示「思考中」，完成后显示「已思考」
 - 思考内容使用左侧细线与弱化文字展示
 - 默认折叠，用户可展开；生成完成后自动收起，手动展开过则保留
-- 原始带标签文本完整保存在会话 JSON 中，仅渲染时拆分
+- 原始带标签文本完整保存在会话 JSON 中，渲染层负责拆分
 
 ### 3.3 系统提示词
 
@@ -96,12 +94,12 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 
 ### 3.4 KV State 缓存
 
-每个会话只保留当前分支的一份 KV state，不为每个历史分支单独缓存。
+每个会话缓存当前分支的一份 KV state。
 
 - 模型加载完成后自动预加载当前会话 state
 - 普通发送、分支切换、编辑、重新生成均使用最长公共前缀匹配
-- native 使用 `llama_memory_seq_rm` 裁掉公共前缀之后的 KV，仅 decode 新增 token
-- state 加载不再按保存时的 `stateCtx` 直接拒绝；native 按 state 实际使用的 KV cells 与当前 `n_ctx` 判断，装不下才回退全量 prefill
+- native 使用 `llama_memory_seq_rm` 裁掉公共前缀之后的 KV，decode 新增 token
+- state 加载由 native 按实际使用的 KV cells 与当前 `n_ctx` 判断；实际 cells 超出时回退全量 prefill
 - 文本 state 保存 token 与 position
 - 多模态 state 保存 `state.bin` 与 `.meta`：图片 hash、文本 token、M-RoPE positions、`n_past`
 - 默认在磁盘空间充足时启用，默认上限 4 GB，可配置 512 MB–20 GB
@@ -116,7 +114,7 @@ state cache prefix hit: 1265/1671
 prefill: 约 5 s（修复前约 19 s）
 ```
 
-> 32k 上下文下 state 文件可能接近 180 MB。加载耗时随文件增大，但通常仍显著低于长历史全量 prefill。
+> state 文件大小与已缓存 token 数、模型层数和 KV 结构成正比。Qwen3-1.7B 实测约 1641 token 为 180 MB；按同一结构接近 32k 满上下文时约 3.5 GB。默认缓存上限 4 GB，可调到 20 GB；180 MB 级加载通常几秒，GB 级会明显变慢，通常快于数万 token 的全量 prefill。
 
 ### 3.5 模型管理
 
@@ -170,7 +168,7 @@ Flutter
 | `app/lib/engine/edge_ai.dart` | worker isolate、pull 式 token、UTF-8 流 |
 | `app/lib/engine/scheduler.dart` | 单模型常驻、内存准入、卸载策略 |
 | `app/lib/session/session_store.dart` | 原子写、扁平树、缓存与显示策略 |
-| `app/lib/session/thinking_content.dart` | 思考标签解析，不修改原始消息 |
+| `app/lib/session/thinking_content.dart` | 思考标签解析，原始消息保持原样 |
 | `app/lib/models/` | Hub provider、下载器、模型页 |
 | `app/lib/ui/` | 主题、组件、聊天页、模型页、设置页 |
 | `native/src/edge_ai.cpp` | C ABI 实现 |
@@ -301,16 +299,16 @@ git push origin v0.1.0
 
 ## 8. 已知限制
 
-- Release APK 仍使用 debug 签名，仅用于内部验证与侧载。
+- 当前 release APK 使用 debug 签名，面向内部验证与侧载。
 - 生产目标为 Android arm64-v8a；x86_64 主要用于模拟器。
 - CPU 库按 armv8.2 + dotprod + fp16 编译，较老的 ARM 设备可能不兼容。
 - MediaTek 默认关闭 Mali coopmat；Adreno 等 GPU 可能需要开启才能发挥矩阵核心。
 - 模型目录位于 App 私有外部目录，尚未接入 SAF 文件选择器。
 - 思考开关依赖 Jinja `enable_thinking`；不支持该参数的模板会忽略。
-- 分片 GGUF 已实现自动队列，仍需要更多真实分片仓库回归。
-- 个别自定义 chat template 仍可能不兼容。
-- 每会话只缓存当前分支 state，不缓存历史分支。
-- 保存 ctx 大于当前 ctx 时也会尝试加载；仅当实际 KV cells 超过当前 `n_ctx` 才回退。
+- 分片 GGUF 已实现自动队列，需要更多真实分片仓库回归。
+- 个别自定义 chat template 可能不兼容。
+- 缓存粒度为当前分支的 state。
+- state 加载由实际 KV cells 与当前 `n_ctx` 决定；超出时回退全量 prefill。
 - 会话尚未支持搜索、重命名、导出与跨设备同步。
 - 功耗数据来自电池电流/电压估算，严谨测量应使用 USB 功率计。
 

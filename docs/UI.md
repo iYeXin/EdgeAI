@@ -89,19 +89,9 @@
 
 ## 截图
 
-![UI shell](screenshots/ui-shell.png)
+![聊天与模型管理](../screenshots/overview-wide.png)
 
-![UI chat](screenshots/ui-chat.png)
-
-![UI models](screenshots/ui-models.png)
-
-![UI settings](screenshots/ui-settings.png)
-
-![UI tree](screenshots/ui-tree.png)
-
-![UI actions](screenshots/ui-actions.png)
-
-![UI markdown](screenshots/ui-markdown.png)
+左：聊天与思考内容；右：本地模型管理。
 
 ## 待做
 

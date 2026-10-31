@@ -2629,11 +2629,7 @@ class _MessageBubble extends StatelessWidget {
             clipBehavior: Clip.none,
             children: [
               Padding(
-                padding: EdgeInsets.only(
-                  right: !isUser && !message.streaming && onAction != null
-                      ? 22
-                      : 0,
-                ),
+                padding: EdgeInsets.zero,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -2684,26 +2680,6 @@ class _MessageBubble extends StatelessWidget {
                   ],
                 ),
               ),
-              if (!isUser && !message.streaming && onAction != null)
-                Positioned(
-                  top: 2,
-                  right: 2,
-                  child: SizedBox(
-                    width: 30,
-                    height: 30,
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                      tooltip: '消息操作',
-                      onPressed: onAction,
-                      icon: const Icon(
-                        Icons.more_horiz_rounded,
-                        size: 18,
-                        color: AppColors.muted,
-                      ),
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
