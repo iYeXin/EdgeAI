@@ -237,6 +237,7 @@ class SessionStore {
   bool thinkingEnabled = false;
   bool imageCompressionEnabled = true;
   int imageMaxWidth = 1024;
+  String? globalSystemPrompt;
   Future<void> _writeQueue = Future<void>.value();
 
   Directory get _sessionDir => Directory('${root.path}/sessions');
@@ -272,6 +273,7 @@ class SessionStore {
         imageCompressionEnabled =
             (data)['imageCompressionEnabled'] as bool? ?? true;
         imageMaxWidth = ((data)['imageMaxWidth'] as num?)?.toInt() ?? 1024;
+        globalSystemPrompt = data['globalSystemPrompt'] as String?;
       } catch (_) {}
     }
     final files = await _sessionDir
@@ -365,6 +367,12 @@ class SessionStore {
   }) async {
     imageCompressionEnabled = enabled;
     imageMaxWidth = maxWidth.clamp(512, 2048);
+    await _writeIndex();
+  }
+
+  Future<void> setGlobalSystemPrompt(String? prompt) async {
+    final value = prompt?.trim();
+    globalSystemPrompt = (value == null || value.isEmpty) ? null : value;
     await _writeIndex();
   }
 
@@ -478,6 +486,7 @@ class SessionStore {
         'thinkingEnabled': thinkingEnabled,
         'imageCompressionEnabled': imageCompressionEnabled,
         'imageMaxWidth': imageMaxWidth,
+        'globalSystemPrompt': globalSystemPrompt,
       }),
     );
   }

@@ -21,8 +21,8 @@ app/android/app/src/main/jniLibs/
 !third_party/**
 
 # Runtime / local data
-models/
-logs/
+/models/
+/logs/
 *.log
 *.gguf
 *.part

@@ -76,7 +76,7 @@ class ThinkingContent {
     if (!open && thinking.isEmpty) {
       return ThinkingContent(
         thinking: '',
-        answer: answer.toString(),
+        answer: answer.toString().trim(),
         open: false,
       );
     }

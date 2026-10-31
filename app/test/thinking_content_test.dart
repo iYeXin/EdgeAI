@@ -45,4 +45,10 @@ void main() {
     expect(parsed.hasThinking, isFalse);
     expect(parsed.answer, '普通回答，不包含思考标签。');
   });
+
+  test('trims leading blank lines when thinking is enabled but unused', () {
+    final parsed = ThinkingContent.parse('\n\n普通回答');
+    expect(parsed.hasThinking, isFalse);
+    expect(parsed.answer, '普通回答');
+  });
 }

@@ -32,6 +32,13 @@ const _systemPrompt =
     'You are a helpful, concise AI assistant running fully offline on an Android phone. '
     'Answer in the same language as the user. Keep answers short unless asked for detail.';
 
+class _PromptEditResult {
+  const _PromptEditResult({required this.text, required this.applyGlobal});
+
+  final String text;
+  final bool applyGlobal;
+}
+
 class ChatMessage {
   ChatMessage.user(
     this.text, {
@@ -111,6 +118,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   int _memoryBudgetMb = 0;
   int _maxTokens = 512;
   bool _thinking = false;
+  String _globalSystemPrompt = _systemPrompt;
 
   String _backendInfo = '';
   String _modelDesc = '';
@@ -196,6 +204,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final store = await SessionStore.open(_channel);
       _sessionStore = store;
       _thinking = store.thinkingEnabled;
+      final storedPrompt = store.globalSystemPrompt?.trim();
+      _globalSystemPrompt = (storedPrompt == null || storedPrompt.isEmpty)
+          ? _systemPrompt
+          : storedPrompt;
       if (_modelManager != null) {
         _pageController.bind(
           store: store,
@@ -236,7 +248,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           store.byId(store.activeId ?? '') ??
           (store.sessions.isNotEmpty
               ? store.sessions.first
-              : store.create(modelPath: _modelPath));
+              : _createSession(store));
       await store.setActive(_session!.id);
       _restoreSession(_session!);
       final preferred = _session!.modelPath;
@@ -495,12 +507,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
+  ChatSession _createSession(SessionStore store) {
+    final session = store.create(modelPath: _modelPath);
+    session.systemPrompt = _globalSystemPrompt;
+    return session;
+  }
+
   Future<void> _newSession() async {
     if (_generating) return;
     final store = _sessionStore;
     if (store == null) return;
     await _saveSession();
-    final session = store.create(modelPath: _modelPath);
+    final session = _createSession(store);
     await _scheduler?.clearState();
     setState(() {
       _session = session;
@@ -543,7 +561,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (_session?.id == session.id) {
       final next = store.sessions.isNotEmpty
           ? store.sessions.first
-          : store.create(modelPath: _modelPath);
+          : _createSession(store);
       setState(() {
         _session = next;
         _restoreSession(next);
@@ -1484,46 +1502,95 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<void> _openSystemPromptEditor() async {
     final session = _session;
-    if (session == null || _generating) return;
+    final store = _sessionStore;
+    if (session == null || store == null || _generating) return;
+
+    final hasOverride = session.systemPrompt?.trim().isNotEmpty ?? false;
     final controller = TextEditingController(
-      text: session.systemPrompt ?? _systemPrompt,
+      text: hasOverride ? session.systemPrompt! : _systemPrompt,
     );
-    final text = await showDialog<String>(
+    var applyGlobal = false;
+
+    final result = await showDialog<_PromptEditResult>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: _surface,
-        title: const Text('系统提示词'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          minLines: 5,
-          maxLines: 9,
-          decoration: const InputDecoration(
-            hintText: '留空使用默认提示词',
-            alignLabelWithHint: true,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          backgroundColor: _surface,
+          title: const Text('系统提示词'),
+          content: SizedBox(
+            width: MediaQuery.sizeOf(dialogContext).width * 0.82,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                    controller: controller,
+                    autofocus: true,
+                    minLines: 5,
+                    maxLines: 9,
+                    decoration: const InputDecoration(
+                      hintText: '留空使用全局提示词',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    value: applyGlobal,
+                    onChanged: (value) =>
+                        setDialogState(() => applyGlobal = value ?? false),
+                    title: const Text('应用到全局'),
+                    subtitle: const Text(
+                      '只影响新会话；已有会话保持当前提示词，不会被修改。',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => setDialogState(() {
+                controller.text = _systemPrompt;
+                applyGlobal = false;
+              }),
+              child: const Text('恢复默认'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(
+                dialogContext,
+                _PromptEditResult(
+                  text: controller.text,
+                  applyGlobal: applyGlobal,
+                ),
+              ),
+              child: const Text('保存'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('保存'),
-          ),
-        ],
       ),
     );
     controller.dispose();
-    if (!mounted || text == null) return;
+    if (!mounted || result == null) return;
 
-    final old = (session.systemPrompt?.trim().isNotEmpty ?? false)
-        ? session.systemPrompt!.trim()
-        : _systemPrompt;
-    final value = text.trim();
-    final next = value.isEmpty ? _systemPrompt : value;
+    final value = result.text.trim();
+    if (result.applyGlobal) {
+      final newGlobal = value.isEmpty || value == _systemPrompt ? null : value;
+      await store.setGlobalSystemPrompt(newGlobal);
+      _globalSystemPrompt = (newGlobal == null) ? _systemPrompt : newGlobal;
+      if (mounted) setState(() => _lastPlan = null);
+      return;
+    }
+
+    final old = hasOverride ? session.systemPrompt!.trim() : _systemPrompt;
     session.systemPrompt = value.isEmpty ? null : value;
+    final next = value.isEmpty ? _systemPrompt : value;
     if (next != old) {
       await _invalidateSessionState(session);
     }
