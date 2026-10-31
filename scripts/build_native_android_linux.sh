@@ -55,6 +55,12 @@ for d in "${SPIRV_HEADERS_DIR:-}" /usr/lib/cmake/SPIRV-Headers /usr/share/cmake/
     break
   fi
 done
+if [[ ${#SPIRV_CMAKE_ARGS[@]} -eq 0 ]]; then
+  FOUND_SPIRV="$(find /usr -name SPIRV-HeadersConfig.cmake -print -quit 2>/dev/null || true)"
+  if [[ -n "$FOUND_SPIRV" ]]; then
+    SPIRV_CMAKE_ARGS=(-DSPIRV-Headers_DIR="$(dirname "$FOUND_SPIRV")")
+  fi
+fi
 
 BUILD_DIR="$ROOT/build/native-android-$ABI"
 

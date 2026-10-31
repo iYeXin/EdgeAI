@@ -1,82 +1,114 @@
 # Edge AI
 
-Flutter + llama.cpp 的 Android 端侧 AI 聊天应用。
+Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使用 Flutter 构建界面，通过 Dart FFI 调用静态链接了 llama.cpp 的 `libedge_ai.so`，在设备本地完成模型加载、推理、多模态处理和 KV 状态缓存。
 
-推理完全在设备上完成：`libedge_ai.so` 静态链接 llama.cpp 的 **CPU / Vulkan** 后端和 `mtmd` 多模态模块，Dart 通过 FFI 调用。模型加载、生成、KV state 都在独立 isolate 执行，UI 只负责流式展示。
+- 仓库：<https://github.com/iYeXin/EdgeAI>
+- 发布页：<https://github.com/iYeXin/EdgeAI/releases>
+- 原生 C ABI：**v5**
+- 构建目标：**arm64-v8a**（真机）、**x86_64**（模拟器）
 
-当前 ABI：**v5**。测试模型：`Qwen3-1.7B`；视觉模型：`Gemma 4 12B QAT` + `mmproj`。
+## 1. 项目状态
 
-## 界面
+| 项目 | 说明 |
+| --- | --- |
+| UI | Flutter 3.47.8 / Dart 3.13.7 |
+| 推理后端 | llama.cpp，CPU + Vulkan |
+| 多模态 | `mtmd`，GGUF + `mmproj` |
+| 最低 Android | 由 Flutter `flutter.minSdkVersion` 决定 |
+| 编译 SDK | Android 36 |
+| NDK | 28.2.13676358 |
+| CMake | 4.1.2 |
+| Vulkan SDK | 1.4.363.0（本地 Windows 构建） |
+| llama.cpp | `aa588a3`，Git submodule |
+| 签名 | 当前 release APK 使用 debug keystore |
 
-栗色 (`#923326`) + 暖白画布的轻量卡片风格。主界面为三页底栏，`IndexedStack` 保持聊天和生成状态：
+当前已完成的能力包括：扁平树会话、分支切换、思考模式、系统提示词、文本/多模态 KV state、前后台模型生命周期、自适应上下文、模型搜索与下载、功耗估算。
+
+## 2. 界面
+
+主界面采用栗色 `#923326` 与暖白画布，底部三页通过 `IndexedStack` 保持状态：
 
 - **聊天**：会话树、分支、Markdown、多图、思考开关、系统提示词
-- **模型**：本地模型、Hub 搜索、下载、Token、分片、SHA256
-- **设置**：推理参数、KV 缓存、功耗显示；独立页面可滚动
+- **模型**：本地模型、Hub 搜索、下载队列、Token、分片、SHA256
+- **设置**：推理参数、KV 缓存、功耗显示
 
-模型在后台加载，不阻塞切换模型/设置；长会话启动后会预加载当前 state。
+模型在后台加载，不阻塞模型页与设置页；长会话启动后会预加载当前 state。
 
-![Shell](screenshots/ui-shell.png)
+![应用外壳](screenshots/ui-shell.png)
 
-![Chat](screenshots/ui-chat.png)
+![聊天界面](screenshots/ui-chat.png)
 
-![Thinking](screenshots/192_thinking_ref_open.png)
+![思考内容](screenshots/191_thinking_ref.png)
 
-![Models](screenshots/ui-models.png)
+![模型页](screenshots/ui-models.png)
 
-![Settings](screenshots/ui-settings.png)
+![设置页](screenshots/ui-settings.png)
 
 ![Markdown](screenshots/ui-markdown.png)
 
-![Session tree](screenshots/ui-tree.png)
+![会话树](screenshots/ui-tree.png)
 
-## 聊天与会话
+## 3. 功能说明
 
-- 扁平树持久化：消息节点 `id / parentId`，`activeLeafId` 指向当前分支
-- 编辑用户消息 → 同一父节点下新建分支
-- 重新生成 → 同一提问下新建 assistant 兄弟节点
-- 分支切换不删除历史；旧版线性会话自动迁移
-- 助手消息右上角 `···`：复制、编辑、重新生成、切换分支
-- 用户消息长按打开同一组操作，聊天界面不再常驻多余按钮
-- 文本可选中复制；助手 Markdown 与用户纯文本均支持
-- 编辑/重新生成会重新标记 assistant 为 streaming，修复了空消息问题
+### 3.1 聊天与会话
 
-### 思考模式
+- 消息以扁平树持久化：每个节点保存 `id` 与 `parentId`，会话保存 `activeLeafId`
+- 编辑用户消息时，在同一父节点下创建新分支
+- 重新生成时，在同一提问下创建 assistant 兄弟节点
+- 切换分支不删除历史；旧版线性会话自动迁移为扁平树
+- 助手消息操作：复制、编辑、重新生成、切换分支
+- 用户消息通过长按打开同一组操作
+- 消息文本可选中复制；助手 Markdown 渲染，用户输入保持纯文本
+- 编辑/重新生成会重新标记 assistant 为 streaming，避免流式事件被丢弃
 
-聊天页模型栏右侧有明确的 **思考** 开关，不再藏在设置里：
+### 3.2 思考模式
 
-- 通过 native Jinja `enable_thinking` 传给模型模板
-- 仅对支持该参数的模型生效（Qwen3 等）
-- 开关持久化到 `sessions.json`
-- 生成过程中仍可继续输入，只是不能发送
-- Enter 插入换行，发送使用右侧按钮
-- 自动识别 DeepSeek/Qwen 的 think 标记、`<thinking>`、`<|thinking|>`、`[THINK]`、`<reasoning>` 等常见标记
-- 思考内容用左侧细线 + 弱化文字单独展示，默认折叠，可展开查看
-- 原始标签文本完整保存在会话 JSON 中，渲染时才拆分，不会丢失
+聊天页模型栏右侧提供独立的「思考」开关，不依赖设置页。
 
-### 系统提示词
+- 通过 native Jinja `enable_thinking` 传给模型 chat template
+- 仅对支持该参数的模型/模板生效
+- 开关状态保存到 `sessions.json`
+- 生成期间输入框仍可用，仅发送按钮切换为停止
+- Enter 插入换行，发送使用输入框右侧按钮
 
-聊天页右上角“系统提示词”可直接编辑当前会话：
+输出中的常见思考标记会被自动识别：
 
-- 留空使用默认提示词
+- DeepSeek / Qwen 风格 think 标记
+- `<thinking>...</thinking>`
+- `<|thinking|>...</|thinking|>` 以及 `</|thinking|>` 变体
+- `[THINK]...[/THINK]`
+- `<reasoning>...</reasoning>`
+
+渲染时思考内容与最终回答分离：
+
+- 生成中显示「思考中」，完成后显示「已思考」
+- 思考内容使用左侧细线与弱化文字展示
+- 默认折叠，用户可展开；生成完成后自动收起，手动展开过则保留
+- 原始带标签文本完整保存在会话 JSON 中，仅渲染时拆分
+
+### 3.3 系统提示词
+
+聊天页右上角可直接编辑当前会话的系统提示词。
+
+- 留空时使用默认提示词
 - 修改后删除该会话 state，下一轮全量 prefill
-- 会话参数 sheet 里仍保留采样参数与“记住本会话设置”
+- 会话参数面板保留采样参数与「记住本会话设置」
 
-## KV State 缓存
+### 3.4 KV State 缓存
 
-每个会话只保留**一份当前分支**的 KV state，不为每个分支单独缓存。
+每个会话只保留当前分支的一份 KV state，不为每个历史分支单独缓存。
 
 - 模型加载完成后自动预加载当前会话 state
-- 普通发送、分支切换、编辑、重新生成都做最长公共前缀匹配
-- native 用 `llama_memory_seq_rm` 裁掉前缀后的 KV，只 decode 新增 token
-- 保存 ctx ≤ 或 > 当前 ctx 都会尝试加载；native 按 state 实际使用的 KV cells 与当前 `n_ctx` 判断，装不下才回退全量 prefill
-- 文本 state：token + position
-- 多模态 state：`state.bin` + `.meta`（图片 hash、文本 token、M-RoPE positions、`n_past`）
-- 默认在磁盘充足时开启，默认上限 4 GB，可调 512 MB–20 GB
-- 显示当前占用、一键清理、LRU 淘汰；保存前检查剩余磁盘
+- 普通发送、分支切换、编辑、重新生成均使用最长公共前缀匹配
+- native 使用 `llama_memory_seq_rm` 裁掉公共前缀之后的 KV，仅 decode 新增 token
+- state 加载不再按保存时的 `stateCtx` 直接拒绝；native 按 state 实际使用的 KV cells 与当前 `n_ctx` 判断，装不下才回退全量 prefill
+- 文本 state 保存 token 与 position
+- 多模态 state 保存 `state.bin` 与 `.meta`：图片 hash、文本 token、M-RoPE positions、`n_past`
+- 默认在磁盘空间充足时启用，默认上限 4 GB，可配置 512 MB–20 GB
+- 支持查看占用、清理、LRU 淘汰；保存前检查剩余磁盘
 - 切换会话时清空 native KV；切回时从 state 文件恢复或重新 prefill
 
-真机实测（1671 prompt）：
+真机长会话实测：
 
 ```text
 state loaded: 1641 tokens, saved ctx 29440, current ctx 32768
@@ -84,83 +116,90 @@ state cache prefix hit: 1265/1671
 prefill: 约 5 s（修复前约 19 s）
 ```
 
-> 32k ctx 下 state 文件可能接近 180 MB。预加载和加载耗时随文件增大，但通常仍远小于长历史全量 prefill。
+> 32k 上下文下 state 文件可能接近 180 MB。加载耗时随文件增大，但通常仍显著低于长历史全量 prefill。
 
-## 模型管理
+### 3.5 模型管理
 
-![Model hub](screenshots/models-hub.png)
+- 扫描本地 GGUF，选择、删除，自动配对 `mmproj`
+- ModelScope 与 HuggingFace 镜像（`hf-mirror.com`）搜索
+- 搜索结果展示下载量、收藏、更新时间、描述与 tags
+- tag 可点击过滤
+- HF 文件体积读取 `blobs=true` / LFS size，ModelScope 文件体积读取文件列表；未知时显示「文件大小未知」
+- 下载过程显示已下载/总量、速度与剩余时间
+- 支持取消、断点续传、磁盘预检、SHA256 校验
+- 分片 GGUF 自动下载同前缀的全部 shard
+- 独立的 ModelScope / HF Token 入口，用于私有或受限仓库
+- 下载完成后可自动切换并加载
 
-- 本地 GGUF 扫描、选择、删除；自动配对 `mmproj`
-- ModelScope + HuggingFace 镜像（`hf-mirror.com`）搜索
-- 搜索结果展示下载量、收藏、更新时间、描述和 tags
-- 可点击 tag 过滤结果；文件列表展示真实体积
-- 文件体积来自 HF `blobs=true` / LFS size 与 ModelScope `Size`
-- 下载进度展示已下载/总量、速度和剩余时间
-- 支持取消、断点续传、磁盘预检、SHA256
-- 分片 GGUF 自动下载同前缀全部 shard
-- Hub Token 入口（ModelScope / HF 分开，用于私有/受限仓库）
-- 下载完成自动切换并加载
-
-## 推理与资源
+### 3.6 推理与资源管理
 
 - CPU / Vulkan 双后端，运行时切换
 - llama.cpp Jinja chat template，兼容 Qwen、Gemma、Llama 等
-- 精确 token 计数、上下文规划、旧消息裁剪、system prompt 保留
-- 流式 UTF-8 输出，跨半个汉字/emoji 也能正确拼接
-- 停止生成、错误提示、worker isolate 崩溃处理
-- 多模态：UI 限制一条消息最多 4 张图 / `mmproj` / M-RoPE
-- 自动 ctx：根据当前可用内存推荐，最多 32768
+- 精确 token 计数、上下文规划、旧消息裁剪，system prompt 始终保留
+- 流式 UTF-8 输出，跨半个汉字或 emoji 也能正确拼接
+- 支持停止生成、错误提示、worker isolate 崩溃处理
+- 多模态：单条消息最多 4 张图，使用 `mmproj` 与 M-RoPE
+- 自动上下文：按当前可用内存推荐，上限 32768
 - 低内存时自动降低 ctx，并预留至少 5% 的 KV/graph 余量
 - 加载前按模型 + mmproj + headroom 做内存准入
-- 后台立即卸载、空闲 10 分钟卸载、内存 watchdog
-- 功率、J/tok、耗电量估算；耗电量支持 `Wh` 或电池容量百分比
+- 应用进入后台立即卸载；空闲 10 分钟卸载；内存 watchdog 兜底
+- 功耗、J/tok、耗电量估算；耗电量支持 `Wh` 或电池容量百分比
 
-## 架构
+## 4. 架构
 
 ```text
 AppShell（底部导航）
-  ├─ ChatPage              聊天 / 会话树 / 分支 / Markdown / 思考
-  ├─ ModelsPage            本地与 Hub 模型管理
-  └─ SettingsPage          推理 / 缓存 / 功耗
-       └─ ChatPageController 跨页共享模型状态与设置
-Flutter UI
-  ├─ SessionStore            扁平树 JSON、state 元数据、全局策略
-  ├─ ModelManager            Hub API / 下载 / 校验 / 本地扫描
+  ├─ ChatPage                 聊天 / 会话树 / 分支 / Markdown / 思考
+  ├─ ModelsPage               本地与 Hub 模型管理
+  └─ SettingsPage             推理 / 缓存 / 功耗
+       └─ ChatPageController  跨页共享模型状态与设置
+
+Flutter
+  ├─ SessionStore             扁平树 JSON、state 元数据、全局策略
+  ├─ ModelManager             Hub API、下载、校验、本地扫描
   └─ InferenceScheduler
-       └─ EdgeAiEngine       worker isolate + FFI
+       └─ EdgeAiEngine        worker isolate + FFI
             └─ libedge_ai.so
-                 ├─ llama.cpp (CPU + Vulkan)
+                 ├─ llama.cpp（CPU + Vulkan）
                  └─ mtmd
 ```
 
-- `app/lib/engine/edge_ai_bindings.dart`：FFI 结构体与函数
-- `app/lib/engine/edge_ai.dart`：worker isolate、pull 式 token、UTF-8 流
-- `app/lib/engine/scheduler.dart`：单模型常驻、内存准入、卸载策略
-- `app/lib/session/session_store.dart`：原子写、扁平树、缓存/显示策略
-- `app/lib/models/`：Hub provider、下载器、模型页
-- `app/lib/ui/`：主题、组件、聊天页、模型页、设置页
-- `native/src/edge_ai.cpp`：C ABI 实现
-- `native/include/edge_ai.h`：ABI v5
+| 模块 | 职责 |
+| --- | --- |
+| `app/lib/engine/edge_ai_bindings.dart` | FFI 结构体与函数签名 |
+| `app/lib/engine/edge_ai.dart` | worker isolate、pull 式 token、UTF-8 流 |
+| `app/lib/engine/scheduler.dart` | 单模型常驻、内存准入、卸载策略 |
+| `app/lib/session/session_store.dart` | 原子写、扁平树、缓存与显示策略 |
+| `app/lib/session/thinking_content.dart` | 思考标签解析，不修改原始消息 |
+| `app/lib/models/` | Hub provider、下载器、模型页 |
+| `app/lib/ui/` | 主题、组件、聊天页、模型页、设置页 |
+| `native/src/edge_ai.cpp` | C ABI 实现 |
+| `native/include/edge_ai.h` | ABI v5 头文件 |
 
-## 构建
+## 5. 构建
 
-依赖：
+### 5.1 依赖
 
-| 工具 | 版本/路径 |
+| 工具 | 版本 |
 | --- | --- |
 | Flutter | 3.47.8 |
-| Android NDK | `28.2.13676358` |
+| Dart | 3.13.7 |
+| Android NDK | 28.2.13676358 |
 | CMake | 4.1.2 |
 | Vulkan SDK | 1.4.363.0 |
-| Visual Studio | 2022 |
+| Visual Studio | 2022（Windows 本地构建） |
 
-脚本默认 Flutter 路径 `D:\App\flutter_sdk\flutter`，换机器需修改 `scripts/*.bat`。
+Windows 脚本中的 Flutter 路径默认是 `D:\App\flutter_sdk\flutter`，其他机器需要修改 `scripts/*.bat`。
+
+### 5.2 Windows 本地构建
+
+完整构建：
 
 ```bat
 scripts\build_all.bat
 ```
 
-分开构建：
+分别构建：
 
 ```bat
 scripts\build_native_android.bat
@@ -168,7 +207,7 @@ cd app
 flutter build apk --release --target-platform android-arm64
 ```
 
-AVD / x86_64：
+模拟器：
 
 ```bat
 scripts\build_native_android_x86_64.bat
@@ -176,59 +215,68 @@ cd app
 flutter build apk --release --target-platform android-x64
 ```
 
-Native 要点：
+Native 构建参数：
 
-- `GGML_VULKAN=ON`、`GGML_CPU=ON`、`GGML_OPENMP=OFF`、`LLAMA_BUILD_MTMD=ON`
-- CPU：`-march=armv8.2-a+dotprod+fp16`
+- `GGML_VULKAN=ON`
+- `GGML_CPU=ON`
+- `GGML_OPENMP=OFF`
+- `LLAMA_BUILD_MTMD=ON`
+- arm64 CPU 架构：`armv8.2-a+dotprod+fp16`
 - 单产物 `libedge_ai.so`，静态链接 `c++_static`
-- `-Wl,-z,max-page-size=16384`，满足 Android 15+ 16 KB page size
+- `-Wl,-z,max-page-size=16384`，满足 Android 15+ 的 16 KB page size
 - `jniLibs.useLegacyPackaging = true`
 
-测试：
+### 5.3 Linux / CI 构建
 
-```bat
+Linux 交叉编译脚本：
+
+```bash
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+bash scripts/build_native_android_linux.sh arm64-v8a
+bash scripts/build_native_android_linux.sh x86_64
+```
+
+需要 `ninja`、`glslc`（`glslang-tools`）、`libvulkan-dev`、`spirv-headers` 与 Android SDK 的 CMake/Ninja。
+
+### 5.4 测试
+
+```bash
 cd app
 flutter analyze
 flutter test
 ```
 
-当前 12 个测试通过：引擎配置/采样参数/上下文规划、3 个会话树迁移/分支测试、6 个思考标签解析测试。
+当前共 12 个测试：引擎配置、采样参数、上下文规划、3 个会话树迁移/分支测试、6 个思考标签解析测试。
 
-## 运行
+## 6. 发布
 
-```bat
-scripts\install_apk.bat
+工作流位置：`.github/workflows/release.yml`。
+
+触发方式：
+
+- **普通 branch push 不触发**
+- 手动运行 `workflow_dispatch`，输入版本号，例如 `v0.1.0`
+- 推送 `v*` tag：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-模型目录：
+流水线会：
 
-```text
-/sdcard/Android/data/com.edgeai.edge_ai/files/models
-```
+1. checkout 包含 submodule 的源码
+2. 安装 Android SDK、NDK、CMake、Flutter、Vulkan/SPIR-V 工具
+3. 运行 `flutter analyze` 与 `flutter test`
+4. 交叉编译 arm64-v8a 与 x86_64 `libedge_ai.so`
+5. 构建两份 release APK
+6. 创建 GitHub Release 并上传 APK
 
-推送模型：
+`third_party/llama.cpp` 以 submodule 固定到 `aa588a3`，CI 使用 `submodules: recursive`。
 
-```bat
-scripts\push_model.bat
-```
+当前工作流使用 debug keystore 签名，产物用于内部测试与侧载。正式分发前需要配置独立的 release keystore，并补充签名密钥。
 
-也可以直接在模型页从 ModelScope / HF 镜像下载。
-
-> 请让 App 自己创建 `models` 目录。用 adb 预先创建的同名目录可能属于 shell，受 scoped storage 影响 App 读不到。
-
-## 发布
-
-GitHub Actions 工作流：`.github/workflows/release.yml`。
-
-- 普通 branch push **不会触发**
-- 手动 `workflow_dispatch`，输入 `v0.1.0` 这类版本号
-- 或推送 `v*` tag，例如 `git tag v0.1.0 && git push origin v0.1.0`
-- 自动编译 arm64 / x86_64 两份 APK，创建 GitHub Release 并上传附件
-- `third_party/llama.cpp` 以 submodule 固定到 `aa588a3`，CI 使用 `submodules: recursive`
-
-当前 APK 仍使用 debug 签名；工作流产出用于内部测试/侧载。正式上架前需要配置自己的 release keystore。
-
-## 实测
+## 7. 验证
 
 设备：vivo V2458A / MediaTek MT6991 / Mali-G925-Immortalis MC12 / Android 16 / arm64-v8a。
 
@@ -246,48 +294,27 @@ GitHub Actions 工作流：`.github/workflows/release.yml`。
 | AVD 12 GB 自动 ctx | 32768，KV 3584 MB，RSS 约 5.4 GB |
 | 真机长生成 | 395 tok，22.3 tok/s，8.4 W，0.38 J/tok |
 | 后台卸载 | PSS 5.7 GB → 196 MB |
-| 真机长会话 state | 1671 prompt，prefix 1265，prefill 约 19 s → **约 5 s** |
+| 真机长会话 state | 1671 prompt，prefix 1265，prefill 约 19 s → 约 5 s |
 | 多模态 state | Gemma 4 12B 单图，prefill 22.4 s → 3.37 s |
 
-> CPU 基准使用单独的 `GGML_VULKAN=OFF` 构建；混合构建里的 `-ngl 0` 仍可能被 Vulkan scheduler 接管。MediaTek 的 Mali coopmat 路径在 Q6_K/Q4_K 下明显慢于标量路径，因此 App 自动设置 `GGML_VK_DISABLE_COOPMAT=1`。
+> CPU 基准使用单独的 `GGML_VULKAN=OFF` 构建。混合构建中的 `-ngl 0` 仍可能被 Vulkan scheduler 接管。MediaTek Mali 的 coopmat 路径在 Q6_K/Q4_K 下明显慢于标量路径，因此应用自动设置 `GGML_VK_DISABLE_COOPMAT=1`。
 
-## 目录
+## 8. 已知限制
 
-```text
-app/
-  lib/engine/        FFI、worker isolate、scheduler、功耗采样
-  lib/models/        Hub 搜索、下载器、模型页
-  lib/session/       扁平树会话、原子写、缓存/显示策略
-  lib/ui/            主题、组件、聊天页、模型页、设置页
-  android/           Android 工程、图标、jniLibs
-native/
-  include/edge_ai.h  ABI v5
-  src/edge_ai.cpp    C ABI 实现
-  test/              smoke / vision / vision-state
-third_party/
-  llama.cpp/         pinned aa588a3
-scripts/             构建、安装、模型推送
-docs/                SDK / 会话 / 缓存 / 模型 / UI
-dist/                已构建 APK 与图标
-screenshots/         真机/AVD 截图
-```
-
-## 已知限制
-
-- Release APK 仍使用 debug 签名，仅用于内部验证。
-- 仅 Android arm64-v8a；没有 iOS/桌面端。
-- CPU 库按 armv8.2 + dotprod + fp16 编译，老 ARM 设备可能不兼容。
-- MediaTek 默认关闭 Mali coopmat；Adreno 等 GPU 可能需要打开才能发挥矩阵核心。
-- 模型目录是 App 私有外部目录，尚未接 SAF 文件选择器。
-- 思考开关只通过 Jinja `enable_thinking` 生效；不支持该参数的模板会忽略。
+- Release APK 仍使用 debug 签名，仅用于内部验证与侧载。
+- 生产目标为 Android arm64-v8a；x86_64 主要用于模拟器。
+- CPU 库按 armv8.2 + dotprod + fp16 编译，较老的 ARM 设备可能不兼容。
+- MediaTek 默认关闭 Mali coopmat；Adreno 等 GPU 可能需要开启才能发挥矩阵核心。
+- 模型目录位于 App 私有外部目录，尚未接入 SAF 文件选择器。
+- 思考开关依赖 Jinja `enable_thinking`；不支持该参数的模板会忽略。
 - 分片 GGUF 已实现自动队列，仍需要更多真实分片仓库回归。
 - 个别自定义 chat template 仍可能不兼容。
-- 每会话只缓存当前分支 state；不缓存其他分支。
-- 保存 ctx 大于当前 ctx 时也会尝试加载；仅当实际 KV cells 超过当前 n_ctx 才回退。
-- 会话尚未做搜索、重命名、导出、跨设备同步。
-- 功耗是电池电流/电压估算；更严谨的测量应使用 USB 功率计。
+- 每会话只缓存当前分支 state，不缓存历史分支。
+- 保存 ctx 大于当前 ctx 时也会尝试加载；仅当实际 KV cells 超过当前 `n_ctx` 才回退。
+- 会话尚未支持搜索、重命名、导出与跨设备同步。
+- 功耗数据来自电池电流/电压估算，严谨测量应使用 USB 功率计。
 
-## 文档
+## 9. 文档
 
 | 文档 | 内容 |
 | --- | --- |
@@ -297,8 +324,34 @@ screenshots/         真机/AVD 截图
 | [docs/MODELS.md](docs/MODELS.md) | ModelScope/HF、搜索、下载、校验、分片 |
 | [docs/UI.md](docs/UI.md) | 栗色主题、页面、组件、会话树、功耗 |
 
-## 产物
+## 10. 目录结构
 
-- [edge-ai-arm64.apk](dist/edge-ai-arm64.apk)（约 34.9 MB）
-- [edge-ai-x86_64.apk](dist/edge-ai-x86_64.apk)（约 35.1 MB）
-- [App 图标](dist/edge-ai-icon.png)
+```text
+app/
+  lib/engine/        FFI、worker isolate、scheduler、功耗采样
+  lib/models/        Hub 搜索、下载器、模型页
+  lib/session/       扁平树会话、原子写、缓存/显示策略、思考解析
+  lib/ui/            主题、组件、聊天页、模型页、设置页
+  android/           Android 工程、图标、jniLibs
+native/
+  include/edge_ai.h  ABI v5
+  src/edge_ai.cpp    C ABI 实现
+  test/              smoke / vision / vision-state
+third_party/
+  llama.cpp/         Git submodule，固定 aa588a3
+scripts/             构建、安装、模型推送
+docs/                SDK / 会话 / 缓存 / 模型 / UI
+screenshots/         真机与模拟器截图
+dist/                图标；APK 由 GitHub Releases 发布
+```
+
+## 11. 产物
+
+APK 通过 GitHub Releases 发布：
+
+<https://github.com/iYeXin/EdgeAI/releases>
+
+- `edge-ai-arm64.apk`
+- `edge-ai-x86_64.apk`
+
+App 图标：[dist/edge-ai-icon.png](dist/edge-ai-icon.png)
