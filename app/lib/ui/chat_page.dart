@@ -907,9 +907,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<void> _pickImage() async {
     try {
+      final compress = _sessionStore?.imageCompressionEnabled ?? true;
+      final maxWidth = (_sessionStore?.imageMaxWidth ?? 1024).toDouble();
       final picked = await ImagePicker().pickMultiImage(
-        maxWidth: 1600,
-        imageQuality: 88,
+        maxWidth: compress ? maxWidth : null,
+        imageQuality: compress ? 88 : null,
       );
       if (picked.isEmpty || !mounted) return;
       setState(() {

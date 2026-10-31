@@ -247,6 +247,81 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               const SizedBox(height: 18),
+              const AppSectionHeader(title: '图像输入', overline: 'MULTIMODAL'),
+              const SizedBox(height: 8),
+              SurfaceCard(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 14),
+                child: store == null
+                    ? const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Text('存储初始化中…', style: AppText.small),
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: store.imageCompressionEnabled,
+                            title: const Text(
+                              '自动压缩图像',
+                              style: AppText.bodyStrong,
+                            ),
+                            subtitle: const Text(
+                              '选择图片时按宽度缩放并重新编码，减少视觉 token 与嵌入耗时。',
+                              style: AppText.small,
+                            ),
+                            onChanged: (value) async {
+                              await store.setImageInputPolicy(
+                                enabled: value,
+                                maxWidth: store.imageMaxWidth,
+                              );
+                              if (mounted) setState(() {});
+                            },
+                          ),
+                          if (store.imageCompressionEnabled) ...[
+                            const SizedBox(height: 4),
+                            const Text('最大宽度', style: AppText.small),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final value in const [
+                                  768,
+                                  1024,
+                                  1280,
+                                  1600,
+                                ])
+                                  ChoiceChip(
+                                    label: Text('$value px'),
+                                    selected: store.imageMaxWidth == value,
+                                    showCheckmark: false,
+                                    selectedColor: AppColors.primaryWash,
+                                    side: BorderSide(
+                                      color: store.imageMaxWidth == value
+                                          ? AppColors.primary
+                                          : AppColors.line,
+                                    ),
+                                    onSelected: (_) async {
+                                      await store.setImageInputPolicy(
+                                        enabled: true,
+                                        maxWidth: value,
+                                      );
+                                      if (mounted) setState(() {});
+                                    },
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              '该设置影响新选择的图片；关闭压缩后按原图交由 native 处理。',
+                              style: AppText.small,
+                            ),
+                          ],
+                        ],
+                      ),
+              ),
+              const SizedBox(height: 18),
               const AppSectionHeader(title: '缓存', overline: 'STORAGE'),
               const SizedBox(height: 8),
               SurfaceCard(

@@ -235,6 +235,8 @@ class SessionStore {
   bool energyEstimateEnabled = true;
   bool energyAsPercent = false;
   bool thinkingEnabled = false;
+  bool imageCompressionEnabled = true;
+  int imageMaxWidth = 1024;
   Future<void> _writeQueue = Future<void>.value();
 
   Directory get _sessionDir => Directory('${root.path}/sessions');
@@ -267,6 +269,9 @@ class SessionStore {
             (data)['energyEstimateEnabled'] as bool? ?? true;
         energyAsPercent = (data)['energyAsPercent'] as bool? ?? false;
         thinkingEnabled = (data)['thinkingEnabled'] as bool? ?? false;
+        imageCompressionEnabled =
+            (data)['imageCompressionEnabled'] as bool? ?? true;
+        imageMaxWidth = ((data)['imageMaxWidth'] as num?)?.toInt() ?? 1024;
       } catch (_) {}
     }
     final files = await _sessionDir
@@ -351,6 +356,15 @@ class SessionStore {
 
   Future<void> setThinkingEnabled(bool enabled) async {
     thinkingEnabled = enabled;
+    await _writeIndex();
+  }
+
+  Future<void> setImageInputPolicy({
+    required bool enabled,
+    required int maxWidth,
+  }) async {
+    imageCompressionEnabled = enabled;
+    imageMaxWidth = maxWidth.clamp(512, 2048);
     await _writeIndex();
   }
 
@@ -462,6 +476,8 @@ class SessionStore {
         'energyEstimateEnabled': energyEstimateEnabled,
         'energyAsPercent': energyAsPercent,
         'thinkingEnabled': thinkingEnabled,
+        'imageCompressionEnabled': imageCompressionEnabled,
+        'imageMaxWidth': imageMaxWidth,
       }),
     );
   }
