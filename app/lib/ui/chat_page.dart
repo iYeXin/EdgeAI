@@ -1218,6 +1218,112 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     await _scheduler?.cancel();
   }
 
+  Future<void> _copyMessage(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('已复制'),
+        backgroundColor: AppColors.primaryDeep,
+      ),
+    );
+  }
+
+  Widget _messageFooter(ChatMessage message) {
+    final session = _session;
+    final node = message.nodeId == null
+        ? null
+        : session?.nodeById(message.nodeId!);
+    if (session == null || node == null || message.streaming) {
+      return const SizedBox.shrink();
+    }
+    final siblings = session.siblingsOf(node);
+    final index = siblings.indexWhere((item) => item.id == node.id);
+    final isUser = message.role == 'user';
+    final actions = <Widget>[
+      if (!isUser)
+        _footerAction(
+          icon: Icons.refresh_rounded,
+          tooltip: '重新生成',
+          onPressed: _generating ? null : () => _regenerateMessage(node),
+        ),
+      _footerAction(
+        icon: Icons.content_copy_rounded,
+        tooltip: '复制',
+        onPressed: () => _copyMessage(
+          isUser ? node.text : ThinkingContent.parse(node.text).answer,
+        ),
+      ),
+      if (isUser)
+        _footerAction(
+          icon: Icons.edit_outlined,
+          tooltip: '编辑',
+          onPressed: _generating ? null : () => _editMessage(node),
+        ),
+      if (siblings.length > 1) ...[
+        _footerAction(
+          icon: Icons.chevron_left_rounded,
+          tooltip: '上一个分支',
+          onPressed: index > 0 ? () => _moveBranch(node, -1) : null,
+        ),
+        _footerAction(
+          icon: Icons.chevron_right_rounded,
+          tooltip: '下一个分支',
+          onPressed: index >= 0 && index < siblings.length - 1
+              ? () => _moveBranch(node, 1)
+              : null,
+        ),
+        _footerAction(
+          icon: Icons.account_tree_outlined,
+          tooltip: '选择分支',
+          onPressed: _generating ? null : () => _switchBranch(node),
+        ),
+      ],
+    ];
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(top: 1, bottom: 3),
+        child: Row(mainAxisSize: MainAxisSize.min, children: actions),
+      ),
+    );
+  }
+
+  Widget _footerAction({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+  }) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+      icon: Icon(icon, size: 16, color: AppColors.muted),
+    );
+  }
+
+  Future<void> _moveBranch(StoredMessage node, int delta) async {
+    final session = _session;
+    if (session == null || _generating) return;
+    final siblings = session.siblingsOf(node);
+    final index = siblings.indexWhere((item) => item.id == node.id);
+    final target = index + delta;
+    if (index < 0 || target < 0 || target >= siblings.length) return;
+    await _saveSession();
+    final leaf = session.latestLeaf(siblings[target].id);
+    if (leaf == null) return;
+    await _scheduler?.clearState();
+    _stateLoadedForCurrent = false;
+    setState(() {
+      _setPathTo(leaf);
+      _lastPlan = null;
+    });
+    await _saveSession();
+    unawaited(_preloadStateCache());
+  }
+
   Future<void> _showMessageActions(ChatMessage message) async {
     final session = _session;
     final node = session?.nodeById(message.nodeId);
@@ -1292,15 +1398,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (!mounted || action == null) return;
     switch (action) {
       case 'copy':
-        await Clipboard.setData(ClipboardData(text: node.text));
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('已复制'),
-              backgroundColor: AppColors.primaryDeep,
-            ),
-          );
-        }
+        await _copyMessage(
+          node.role == 'user'
+              ? node.text
+              : ThinkingContent.parse(node.text).answer,
+        );
         break;
       case 'edit':
         await _editMessage(node);
@@ -1560,11 +1662,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (!mounted || choice == null || choice.id == node.id) return;
     final leaf = session.latestLeaf(choice.id);
     if (leaf == null) return;
+    await _scheduler?.clearState();
+    _stateLoadedForCurrent = false;
     setState(() {
       _setPathTo(leaf);
       _lastPlan = null;
     });
     await _saveSession();
+    unawaited(_preloadStateCache());
   }
 
   void _startPowerSampling() {
@@ -2290,6 +2395,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       message: message,
                       onAction: () => _showMessageActions(message),
                       onImageTap: _openImagePreview,
+                      footer: _messageFooter(message),
                     );
                   },
                 ),
@@ -2948,11 +3054,17 @@ MarkdownStyleSheet _markdownStyle() {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, this.onAction, this.onImageTap});
+  const _MessageBubble({
+    required this.message,
+    this.onAction,
+    this.onImageTap,
+    this.footer,
+  });
 
   final ChatMessage message;
   final VoidCallback? onAction;
   final ValueChanged<String>? onImageTap;
+  final Widget? footer;
 
   @override
   Widget build(BuildContext context) {
@@ -2960,91 +3072,99 @@ class _MessageBubble extends StatelessWidget {
     final width = MediaQuery.sizeOf(context).width;
     final maxWidth = width * 0.82;
 
-    return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-      child: GestureDetector(
-        onLongPress: onAction,
-        child: Container(
-          constraints: BoxConstraints(maxWidth: maxWidth),
-          margin: const EdgeInsets.symmetric(vertical: 8),
-          padding: const EdgeInsets.fromLTRB(16, 13, 16, 12),
-          decoration: BoxDecoration(
-            color: isUser ? _accent : _surface,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(isUser ? 16 : 4),
-              bottomRight: Radius.circular(isUser ? 4 : 16),
-            ),
-            border: isUser ? null : Border.all(color: _line),
-            boxShadow: isUser ? null : AppShadows.card,
-          ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Padding(
-                padding: EdgeInsets.zero,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (!isUser &&
-                        message.streaming &&
-                        message.text.trim().isEmpty)
-                      const _GeneratingIndicator(),
-                    if (message.imagePaths.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: [
-                            for (final path in message.imagePaths)
-                              GestureDetector(
-                                onTap: () => onImageTap?.call(path),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(10),
-                                  child: Image.file(
-                                    File(path),
-                                    width: message.imagePaths.length == 1
-                                        ? 220
-                                        : 104,
-                                    height: message.imagePaths.length == 1
-                                        ? 180
-                                        : 104,
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    if (message.text.trim().isNotEmpty)
-                      _MessageText(message: message),
-                    if (!message.streaming &&
-                        message.stats.isNotEmpty &&
-                        !isUser)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 9),
-                        child: Text(
-                          _statsLine(
-                            message.stats,
-                            message.cancelled,
-                            message.powerLabel,
-                          ),
-                          style: const TextStyle(
-                            fontSize: 10,
-                            color: AppColors.muted,
-                            letterSpacing: 0.1,
-                          ),
-                        ),
-                      ),
-                  ],
+    return Column(
+      crossAxisAlignment: isUser
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
+      children: [
+        Align(
+          alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+          child: GestureDetector(
+            onLongPress: onAction,
+            child: Container(
+              constraints: BoxConstraints(maxWidth: maxWidth),
+              margin: const EdgeInsets.symmetric(vertical: 8),
+              padding: const EdgeInsets.fromLTRB(16, 13, 16, 12),
+              decoration: BoxDecoration(
+                color: isUser ? _accent : _surface,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(16),
+                  topRight: const Radius.circular(16),
+                  bottomLeft: Radius.circular(isUser ? 16 : 4),
+                  bottomRight: Radius.circular(isUser ? 4 : 16),
                 ),
+                border: isUser ? null : Border.all(color: _line),
+                boxShadow: isUser ? null : AppShadows.card,
               ),
-            ],
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Padding(
+                    padding: EdgeInsets.zero,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (!isUser &&
+                            message.streaming &&
+                            message.text.trim().isEmpty)
+                          const _GeneratingIndicator(),
+                        if (message.imagePaths.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                for (final path in message.imagePaths)
+                                  GestureDetector(
+                                    onTap: () => onImageTap?.call(path),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: Image.file(
+                                        File(path),
+                                        width: message.imagePaths.length == 1
+                                            ? 220
+                                            : 104,
+                                        height: message.imagePaths.length == 1
+                                            ? 180
+                                            : 104,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        if (message.text.trim().isNotEmpty)
+                          _MessageText(message: message),
+                        if (!message.streaming &&
+                            message.stats.isNotEmpty &&
+                            !isUser)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 9),
+                            child: Text(
+                              _statsLine(
+                                message.stats,
+                                message.cancelled,
+                                message.powerLabel,
+                              ),
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: AppColors.muted,
+                                letterSpacing: 0.1,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ),
-      ),
+        ?footer,
+      ],
     );
   }
 

@@ -59,6 +59,7 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 - 切换分支时保留历史节点；旧版线性会话自动迁移为扁平树
 - 长按任意消息打开操作：复制、编辑、重新生成、切换分支
 - 消息文本可选中复制；助手 Markdown 渲染，用户输入保持纯文本
+- 每条消息下方常驻操作栏：复制、编辑/重新生成、前后分支、选择分支
 - 消息图片可点击全屏预览、缩放
 - 编辑用户消息时可增删图片，最多 4 张
 - 模型生成等待期间显示动画占位，不再出现空白气泡
@@ -80,7 +81,7 @@ Edge AI 是一个完全离线的 Android 端侧大模型聊天应用。应用使
 - DeepSeek / Qwen 风格 think 标记
 - `<thinking>...</thinking>`
 - `<|thinking|>...</|thinking|>` 以及 `</|thinking|>` 变体
-- Gemma 4 `<|channel>thought ... <|channel|>`
+- Gemma 4 `<|channel>thought ... <channel|>`
 - `[THINK]...[/THINK]`
 - `<reasoning>...</reasoning>`
 

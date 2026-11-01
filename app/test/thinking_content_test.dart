@@ -44,7 +44,7 @@ void main() {
     final parsed = ThinkingContent.parse(
       '<|channel>thought Thinking Process:\n'
       '1. Analyze the request.\n'
-      '<|channel|>9.9 大。',
+      '<channel|>9.9 大。',
     );
     expect(parsed.thinking, contains('Thinking Process'));
     expect(parsed.thinking, contains('Analyze the request'));

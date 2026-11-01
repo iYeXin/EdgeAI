@@ -106,7 +106,9 @@ class ThinkingContent {
       ),
       2 => RegExp('\\[\\s*/\\s*$escaped\\s*\\]', caseSensitive: false),
       _ => RegExp(
-        '<\\|\\s*/?\\s*channel\\s*\\|>|</\\|\\s*channel\\s*\\|>',
+        '<channel\\s*\\|>'
+        '|<\\|\\s*/?\\s*channel\\s*\\|>'
+        '|</\\|\\s*channel\\s*\\|>',
         caseSensitive: false,
       ),
     };
