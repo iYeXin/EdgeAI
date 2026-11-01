@@ -62,6 +62,8 @@ class DownloadJob {
   bool paused = false;
   bool pauseRequested = false;
   bool inFlight = false;
+  bool retrying = false;
+  int retryAttempt = 0;
   String? error;
   double speedBps = 0;
   Duration? eta;
@@ -105,6 +107,7 @@ class DownloadJob {
     cancelled = true;
     pauseRequested = false;
     paused = false;
+    retrying = false;
   }
 
   Future<void> dispose() => _updates.close();
@@ -198,6 +201,7 @@ class ModelManager {
     if (job.done || job.cancelled) return;
     job.pauseRequested = true;
     job.paused = true;
+    job.retrying = false;
     job.speedBps = 0;
     job.eta = null;
     job.onProgress?.call(job);
@@ -209,6 +213,8 @@ class ModelManager {
     job.paused = false;
     job.pauseRequested = false;
     job.error = null;
+    job.retrying = false;
+    job.retryAttempt = 0;
     job.onProgress?.call(job);
     job.emit();
     unawaited(_download(job));
@@ -232,6 +238,8 @@ class ModelManager {
     if (provider == null) return;
     job.inFlight = true;
     job.error = null;
+    job.retrying = false;
+    job.retryAttempt = 0;
     final part = File('${job.target}.part');
     final free = await freeBytes();
     if (free > 0 && free < job.file.size + 256 * 1024 * 1024) {
@@ -241,6 +249,58 @@ class ModelManager {
       job.emit();
       return;
     }
+
+    for (var attempt = 0; attempt < 4; attempt++) {
+      try {
+        await _downloadAttempt(job);
+        break;
+      } on _DownloadPaused {
+        job.paused = true;
+        job.pauseRequested = false;
+        job.retrying = false;
+        break;
+      } on _DownloadCancelled {
+        job.cancelled = true;
+        job.paused = false;
+        job.pauseRequested = false;
+        job.retrying = false;
+        job.error = null;
+        try {
+          if (await part.exists()) await part.delete();
+        } catch (_) {}
+        break;
+      } catch (error) {
+        if (job.cancelled || job.paused) break;
+        if (attempt >= 3 || !_isRetryable(error)) {
+          job.error = error.toString();
+          break;
+        }
+        job.retryAttempt = attempt + 1;
+        job.retrying = true;
+        job.onProgress?.call(job);
+        job.emit();
+        await Future<void>.delayed(Duration(seconds: 1 << attempt));
+        job.retrying = false;
+        if (job.cancelled || job.paused) break;
+      }
+    }
+
+    job.inFlight = false;
+    job.retrying = false;
+    job.speedBps = 0;
+    job.eta = null;
+    if (job.cancelled) {
+      try {
+        if (await part.exists()) await part.delete();
+      } catch (_) {}
+    }
+    job.onProgress?.call(job);
+    job.emit();
+  }
+
+  Future<void> _downloadAttempt(DownloadJob job) async {
+    final provider = job.provider!;
+    final part = File('${job.target}.part');
     var existing = 0;
     if (await part.exists()) {
       existing = await part.length();
@@ -302,34 +362,30 @@ class ModelManager {
       job.onProgress?.call(job);
       job.emit();
       await _writeMeta(job);
-    } on _DownloadPaused {
-      job.paused = true;
-      job.pauseRequested = false;
-      job.speedBps = 0;
-      job.eta = null;
-    } on _DownloadCancelled {
-      job.cancelled = true;
-      job.paused = false;
-      job.pauseRequested = false;
-      job.error = null;
-      try {
-        if (await part.exists()) await part.delete();
-      } catch (_) {}
-    } catch (error) {
-      if (!job.cancelled && !job.paused) {
-        job.error = error.toString();
-      }
     } finally {
       try {
         await raf?.close();
       } catch (_) {}
       client.close(force: true);
-      job.inFlight = false;
-      job.speedBps = 0;
-      job.eta = null;
-      job.onProgress?.call(job);
-      job.emit();
     }
+  }
+
+  bool _isRetryable(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('connection closed') ||
+        text.contains('connection reset') ||
+        text.contains('connection aborted') ||
+        text.contains('socketexception') ||
+        text.contains('timeout') ||
+        text.contains('timed out') ||
+        text.contains('handshake') ||
+        text.contains('http 408') ||
+        text.contains('http 429') ||
+        text.contains('http 500') ||
+        text.contains('http 502') ||
+        text.contains('http 503') ||
+        text.contains('http 504') ||
+        text.contains('下载不完整');
   }
 
   Future<void> _writeMeta(DownloadJob job) async {

@@ -74,6 +74,9 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
+  BorderSide _chipSide(bool selected) =>
+      BorderSide(color: selected ? AppColors.primary : AppColors.line);
+
   Future<void> _apply() async {
     widget.controller.applySettings(
       InferenceSettings(
@@ -175,6 +178,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             showCheckmark: false,
                             selectedColor: AppColors.primaryWash,
                             backgroundColor: AppColors.surfaceTint,
+                            side: _chipSide(_threads == value),
                             onSelected: (_) => _mark(() => _threads = value),
                           ),
                       ],
@@ -193,6 +197,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             showCheckmark: false,
                             selectedColor: AppColors.primaryWash,
                             backgroundColor: AppColors.surfaceTint,
+                            side: _chipSide(_context == value),
                             onSelected: (_) => _mark(() => _context = value),
                           ),
                       ],
@@ -211,6 +216,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             showCheckmark: false,
                             selectedColor: AppColors.primaryWash,
                             backgroundColor: AppColors.surfaceTint,
+                            side: _chipSide(_memory == value),
                             onSelected: (_) => _mark(() => _memory = value),
                           ),
                       ],
@@ -389,6 +395,9 @@ class _SettingsPageState extends State<SettingsPage> {
                               showCheckmark: false,
                               selectedColor: AppColors.primaryWash,
                               backgroundColor: AppColors.surfaceTint,
+                              side: _chipSide(
+                                store.stateCacheMaxBytes == value * 1024 * 1024,
+                              ),
                               onSelected: (_) async {
                                 await store.setStateCachePolicy(
                                   enabled: store.stateCacheEnabled,
@@ -471,6 +480,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   label: const Text('Wh'),
                                   selected: !store.energyAsPercent,
                                   showCheckmark: false,
+                                  side: _chipSide(!store.energyAsPercent),
                                   onSelected: (_) async {
                                     await store.setPowerDisplayPolicy(
                                       enabled: true,
@@ -485,6 +495,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                   label: const Text('电池 %'),
                                   selected: store.energyAsPercent,
                                   showCheckmark: false,
+                                  side: _chipSide(store.energyAsPercent),
                                   onSelected: (_) async {
                                     await store.setPowerDisplayPolicy(
                                       enabled: true,

@@ -38,6 +38,7 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
   final TextEditingController _search = TextEditingController();
   final Map<String, DownloadJob> _jobs = <String, DownloadJob>{};
   final List<DownloadJob> _activeJobs = <DownloadJob>[];
+  final Set<String> _deletingPaths = <String>{};
 
   List<LocalModel> _local = <LocalModel>[];
   List<HubModel> _results = <HubModel>[];
@@ -124,13 +125,15 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
   }
 
   Future<void> _download(HubModel model, HubFile main) async {
-    final mmproj = _files.where((f) => f.isMmproj).toList();
+    final mmprojOptions = _files.where((f) => f.isMmproj).toList();
+    final mmproj = await _selectMmproj(mmprojOptions);
+    if (mmprojOptions.isNotEmpty && mmproj == null) return;
     final prefix = main.splitPrefix;
     final shards = prefix == null
         ? <HubFile>[main]
         : _files.where((f) => f.splitPrefix == prefix).toList();
     final queue = <HubFile>[];
-    for (final file in [...shards, ...mmproj.take(1)]) {
+    for (final file in [...shards, ?mmproj]) {
       if (!queue.any((f) => f.path == file.path)) queue.add(file);
     }
     final totalBytes = queue.fold<int>(0, (sum, f) => sum + f.size);
@@ -226,6 +229,108 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
       ),
     );
     if (mounted) setState(() {});
+  }
+
+  Future<HubFile?> _selectMmproj(List<HubFile> options) async {
+    if (options.isEmpty) return null;
+    options.sort((a, b) => _mmprojRank(a).compareTo(_mmprojRank(b)));
+    if (options.length == 1) return options.first;
+    return showModalBottomSheet<HubFile>(
+      context: context,
+      backgroundColor: _surface,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (sheetContext) => SizedBox(
+        height: MediaQuery.sizeOf(sheetContext).height * 0.46,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    '选择视觉投影精度',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '该仓库包含 ${options.length} 个 mmproj。f16 通常足够，f32 更大且更慢。',
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.separated(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+                itemCount: options.length,
+                separatorBuilder: (_, _) =>
+                    const Divider(color: _line, height: 1),
+                itemBuilder: (_, index) {
+                  final option = options[index];
+                  return ListTile(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    title: Text(
+                      _mmprojPrecision(option),
+                      style: const TextStyle(
+                        color: _text,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: Text(
+                      '${option.name} · ${_size(option.size)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: _muted, fontSize: 10),
+                    ),
+                    trailing: const Icon(
+                      Icons.chevron_right_rounded,
+                      color: _muted,
+                    ),
+                    onTap: () => Navigator.pop(sheetContext, option),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static int _mmprojRank(HubFile file) {
+    final name = file.name.toLowerCase();
+    if (name.contains('f16')) return 0;
+    if (name.contains('q8')) return 1;
+    if (name.contains('q6')) return 2;
+    if (name.contains('q5')) return 3;
+    if (name.contains('q4')) return 4;
+    if (name.contains('bf16')) return 5;
+    if (name.contains('f32')) return 6;
+    return 7;
+  }
+
+  static String _mmprojPrecision(HubFile file) {
+    final name = file.name.toLowerCase();
+    for (final value in const [
+      'f32',
+      'bf16',
+      'f16',
+      'q8_0',
+      'q6_k',
+      'q5_k',
+      'q4_k',
+      'q4_0',
+    ]) {
+      if (name.contains(value)) return value.toUpperCase();
+    }
+    return '默认精度';
   }
 
   Future<void> _editToken() async {
@@ -346,6 +451,41 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
     );
   }
 
+  Future<void> _deleteModel(LocalModel model) async {
+    if (_deletingPaths.contains(model.path)) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _surface,
+        title: const Text('删除模型？'),
+        content: Text(
+          '${model.name}\n${_size(model.size)}'
+          '${model.vision ? '\n将同时删除配套 mmproj。' : ''}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除', style: TextStyle(color: _danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _deletingPaths.add(model.path));
+    try {
+      await widget.manager.delete(model);
+      await _refreshLocal();
+    } catch (error) {
+      if (mounted) setState(() => _error = '删除失败：$error');
+    } finally {
+      if (mounted) setState(() => _deletingPaths.remove(model.path));
+    }
+  }
+
   Widget _buildLocal() {
     if (_loading) {
       return const Center(child: CircularProgressIndicator(color: _accent));
@@ -382,26 +522,39 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
               '${_size(model.size)}${model.vision ? ' · 视觉' : ''}',
               style: const TextStyle(color: _muted, fontSize: 11),
             ),
-            trailing: IconButton(
-              onPressed: model.path == widget.currentPath
-                  ? null
-                  : () async {
-                      await widget.manager.delete(model);
-                      await _refreshLocal();
-                    },
-              icon: const Icon(
-                Icons.delete_outline_rounded,
-                color: _muted,
-                size: 20,
-              ),
+            trailing: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: _deletingPaths.contains(model.path)
+                  ? const SizedBox(
+                      key: ValueKey('deleting'),
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: _accent,
+                      ),
+                    )
+                  : IconButton(
+                      key: const ValueKey('delete'),
+                      onPressed: model.path == widget.currentPath
+                          ? null
+                          : () => _deleteModel(model),
+                      icon: const Icon(
+                        Icons.delete_outline_rounded,
+                        color: _muted,
+                        size: 20,
+                      ),
+                    ),
             ),
-            onTap: () {
-              if (widget.pageMode) {
-                widget.onSelected?.call(model);
-              } else {
-                Navigator.pop(context, model);
-              }
-            },
+            onTap: _deletingPaths.contains(model.path)
+                ? null
+                : () {
+                    if (widget.pageMode) {
+                      widget.onSelected?.call(model);
+                    } else {
+                      Navigator.pop(context, model);
+                    }
+                  },
           ),
         );
       },
@@ -461,14 +614,7 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
             ],
           ),
         ),
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            child: Text(
-              _error!,
-              style: const TextStyle(color: AppColors.red, fontSize: 11),
-            ),
-          ),
+        if (_error != null) _ErrorBanner(message: _error!),
         Expanded(
           child: _searching
               ? const Center(child: CircularProgressIndicator(color: _accent))
@@ -686,7 +832,7 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
   }
 
   Widget _buildFiles() {
-    final gguf = _files.where((f) => f.isGguf).toList();
+    final gguf = _files.where((f) => f.isGguf && !f.isMmproj).toList();
     return Column(
       children: [
         Padding(
@@ -946,6 +1092,8 @@ class _DownloadManagerSheetState extends State<_DownloadManagerSheet> {
         ? '已取消'
         : job.paused
         ? '已暂停'
+        : job.retrying
+        ? '重连中'
         : job.error != null
         ? '下载失败'
         : '下载中';
@@ -1011,9 +1159,10 @@ class _DownloadManagerSheetState extends State<_DownloadManagerSheet> {
               Expanded(
                 child: Text(
                   job.error != null && !job.done
-                      ? job.error!
+                      ? _friendlyError(job.error!)
                       : '${_downloadSize(job.received)} / '
                             '${_downloadSize(total)}'
+                            '${job.retrying ? ' · 正在重连（${job.retryAttempt}/3）' : ''}'
                             '${job.running && job.speedBps > 0 ? ' · ${_downloadSize(job.speedBps.round())}/s' : ''}'
                             '${job.running && job.eta != null ? ' · 剩余 ${_downloadTime(job.eta!)}' : ''}',
                   maxLines: 2,
@@ -1105,6 +1254,93 @@ class _DownloadManagerSheetState extends State<_DownloadManagerSheet> {
       constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
       padding: const EdgeInsets.all(5),
       icon: Icon(icon, color: color, size: 18),
+    );
+  }
+}
+
+String _friendlyError(String raw) {
+  final text = raw.toLowerCase();
+  if (text.contains('connection closed') ||
+      text.contains('connection reset') ||
+      text.contains('connection aborted') ||
+      text.contains('socketexception') ||
+      text.contains('timed out') ||
+      text.contains('timeout')) {
+    return '网络连接中断，请检查网络后重试。';
+  }
+  if (text.contains('http 401') || text.contains('http 403')) {
+    return '鉴权失败，请检查 Hub Token。';
+  }
+  if (text.contains('http 404')) return '模型或文件不存在。';
+  if (text.contains('磁盘') || text.contains('空间不足')) {
+    return '磁盘空间不足，请清理后重试。';
+  }
+  if (text.contains('sha256')) return '文件校验失败，请重新下载。';
+  final line = raw.split('\n').first.trim();
+  if (line.length > 140) return '${line.substring(0, 140)}…';
+  return line;
+}
+
+class _ErrorBanner extends StatelessWidget {
+  const _ErrorBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(14, 2, 14, 6),
+      padding: const EdgeInsets.fromLTRB(10, 7, 8, 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF3F1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFF0C9C3)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline_rounded, size: 17, color: _danger),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              _friendlyError(message),
+              style: const TextStyle(
+                color: _danger,
+                fontSize: 11,
+                height: 1.35,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => showDialog<void>(
+              context: context,
+              builder: (dialogContext) => AlertDialog(
+                title: const Text('错误详情'),
+                content: SizedBox(
+                  width: 460,
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      message,
+                      style: const TextStyle(fontSize: 11, height: 1.4),
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('关闭'),
+                  ),
+                ],
+              ),
+            ),
+            style: TextButton.styleFrom(
+              minimumSize: const Size(42, 28),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+            ),
+            child: const Text('详情', style: TextStyle(fontSize: 10.5)),
+          ),
+        ],
+      ),
     );
   }
 }

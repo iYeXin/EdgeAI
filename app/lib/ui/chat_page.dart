@@ -1944,10 +1944,31 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       );
     }
     if (_loading) {
-      return _LoadingView(
-        backend: _backend,
-        fileName: _modelPath!.split(Platform.pathSeparator).last,
-        modelBytes: _modelBytes,
+      return Column(
+        children: [
+          Expanded(
+            child: _LoadingView(
+              backend: _backend,
+              fileName: _modelPath!.split(Platform.pathSeparator).last,
+              modelBytes: _modelBytes,
+            ),
+          ),
+          _Composer(
+            controller: _input,
+            generating: false,
+            sendEnabled: false,
+            pendingImages: _pendingImagePaths,
+            onAttach: _pickImage,
+            onRemoveImage: (index) => setState(() {
+              _pendingImagePaths.removeAt(index);
+              _pendingImagePath = _pendingImagePaths.isEmpty
+                  ? null
+                  : _pendingImagePaths.first;
+            }),
+            onSend: _send,
+            onStop: _stop,
+          ),
+        ],
       );
     }
     if (!_loaded) {
@@ -2778,6 +2799,7 @@ class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
     required this.generating,
+    this.sendEnabled = true,
     required this.pendingImages,
     required this.onAttach,
     required this.onRemoveImage,
@@ -2787,6 +2809,7 @@ class _Composer extends StatelessWidget {
 
   final TextEditingController controller;
   final bool generating;
+  final bool sendEnabled;
   final List<String> pendingImages;
   final Future<void> Function() onAttach;
   final void Function(int index) onRemoveImage;
@@ -2913,17 +2936,19 @@ class _Composer extends StatelessWidget {
                             ),
                           )
                         : FilledButton(
-                            onPressed: onSend,
+                            onPressed: sendEnabled ? onSend : null,
                             style: FilledButton.styleFrom(
                               padding: EdgeInsets.zero,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(16),
                               ),
-                              backgroundColor: _accent,
+                              backgroundColor: sendEnabled
+                                  ? _accent
+                                  : _surfaceHigh,
                             ),
-                            child: const Icon(
+                            child: Icon(
                               Icons.arrow_upward_rounded,
-                              color: Colors.white,
+                              color: sendEnabled ? Colors.white : _muted,
                               size: 22,
                             ),
                           ),
