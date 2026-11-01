@@ -8,9 +8,10 @@ import 'core/app_theme.dart';
 import 'widgets/app_components.dart';
 
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key, required this.controller});
+  const SettingsPage({super.key, required this.controller, this.onBack});
 
   final ChatPageController controller;
+  final VoidCallback? onBack;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -108,6 +109,13 @@ class _SettingsPageState extends State<SettingsPage> {
           backgroundColor: AppColors.background,
           appBar: AppBar(
             toolbarHeight: 68,
+            leading: widget.onBack == null
+                ? null
+                : IconButton(
+                    tooltip: '返回聊天',
+                    onPressed: widget.onBack,
+                    icon: const Icon(Icons.arrow_back_rounded),
+                  ),
             title: const Text('设置', style: AppText.title),
           ),
           body: ListView(

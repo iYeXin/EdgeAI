@@ -5,9 +5,10 @@ import 'chat_page_controller.dart';
 import 'core/app_theme.dart';
 
 class ModelsPage extends StatelessWidget {
-  const ModelsPage({super.key, required this.controller});
+  const ModelsPage({super.key, required this.controller, this.onBack});
 
   final ChatPageController controller;
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +29,7 @@ class ModelsPage extends StatelessWidget {
               manager: manager,
               currentPath: controller.modelPath,
               pageMode: true,
+              onBack: onBack,
               onSelected: controller.selectModel,
             ),
           ),

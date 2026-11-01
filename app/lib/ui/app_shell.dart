@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'chat_page.dart';
 import 'chat_page_controller.dart';
@@ -33,25 +34,45 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Column(
-        children: [
-          Expanded(
-            child: IndexedStack(
-              index: _index,
-              children: [
-                ChatPage(controller: _controller),
-                ModelsPage(controller: _controller),
-                SettingsPage(controller: _controller),
-              ],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_index != 0) {
+          setState(() => _index = 0);
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: Column(
+          children: [
+            Expanded(
+              child: IndexedStack(
+                index: _index,
+                children: [
+                  ChatPage(controller: _controller),
+                  ModelsPage(
+                    controller: _controller,
+                    onBack: () => setState(() => _index = 0),
+                  ),
+                  SettingsPage(
+                    controller: _controller,
+                    onBack: () => setState(() => _index = 0),
+                  ),
+                ],
+              ),
             ),
-          ),
-          _BottomBar(
-            index: _index,
-            onSelected: (value) => setState(() => _index = value),
-          ),
-        ],
+            _BottomBar(
+              index: _index,
+              onSelected: (value) {
+                if (value == _index) return;
+                setState(() => _index = value);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -20,12 +20,14 @@ class ModelManagerSheet extends StatefulWidget {
     required this.manager,
     this.currentPath,
     this.pageMode = false,
+    this.onBack,
     this.onSelected,
   });
 
   final ModelManager manager;
   final String? currentPath;
   final bool pageMode;
+  final VoidCallback? onBack;
   final ValueChanged<LocalModel>? onSelected;
 
   @override
@@ -224,7 +226,10 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
         manager: widget.manager,
         jobs: _jobs.values.toList(),
         onChanged: () {
-          if (mounted) setState(() {});
+          if (!mounted) return;
+          setState(() {
+            _downloading = _activeJobs.any((job) => job.running);
+          });
         },
       ),
     );
@@ -386,6 +391,14 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
               padding: const EdgeInsets.fromLTRB(20, 16, 10, 6),
               child: Row(
                 children: [
+                  if (widget.onBack != null)
+                    IconButton(
+                      tooltip: '返回聊天',
+                      onPressed: widget.onBack,
+                      icon: const Icon(Icons.arrow_back_rounded, color: _text),
+                    )
+                  else
+                    const SizedBox(width: 4),
                   const Text(
                     '模型',
                     style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
@@ -761,12 +774,19 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
                                     fontSize: 10,
                                   ),
                                 ),
-                                Text(
-                                  '♥ ${_count(model.likes)}',
-                                  style: const TextStyle(
-                                    color: _muted,
-                                    fontSize: 10,
-                                  ),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const _HeartIcon(size: 10),
+                                    const SizedBox(width: 2),
+                                    Text(
+                                      _count(model.likes),
+                                      style: const TextStyle(
+                                        color: _muted,
+                                        fontSize: 10,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                                 if (model.updatedLabel != null)
                                   Text(
@@ -920,6 +940,10 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
                                 Text(
                                   job.done
                                       ? '已下载 · ${_size(job.received)}'
+                                      : job.cancelled
+                                      ? '已取消'
+                                      : job.paused
+                                      ? '已暂停 · ${_size(job.received)} / ${job.total > 0 ? _size(job.total) : '未知'}'
                                       : '${_size(job.received)} / '
                                             '${job.total > 0 ? _size(job.total) : '未知'}'
                                             '${job.speedBps > 0 ? ' · ${_size(job.speedBps.round())}/s' : ''}'
@@ -931,7 +955,7 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
                                 ),
                               ],
                             ),
-                      trailing: job != null && !job.done && job.error == null
+                      trailing: job != null && job.running
                           ? const SizedBox(
                               width: 18,
                               height: 18,
@@ -945,7 +969,10 @@ class _ModelManagerSheetState extends State<ModelManagerSheet>
                               color: _accent,
                               size: 20,
                             ),
-                      onTap: (_searching || _downloading)
+                      onTap:
+                          (_searching ||
+                              _downloading ||
+                              (job != null && !job.done && !job.cancelled))
                           ? null
                           : () => _download(_selectedModel!, file),
                     );
@@ -1256,6 +1283,41 @@ class _DownloadManagerSheetState extends State<_DownloadManagerSheet> {
       icon: Icon(icon, color: color, size: 18),
     );
   }
+}
+
+class _HeartIcon extends StatelessWidget {
+  const _HeartIcon({this.size = 10});
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(size: Size(size, size), painter: _HeartPainter(_accent));
+  }
+}
+
+class _HeartPainter extends CustomPainter {
+  _HeartPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final path = Path()
+      ..moveTo(w * 0.5, h * 0.94)
+      ..cubicTo(w * 0.08, h * 0.62, -w * 0.06, h * 0.22, w * 0.25, h * 0.12)
+      ..cubicTo(w * 0.38, h * 0.08, w * 0.47, h * 0.18, w * 0.5, h * 0.27)
+      ..cubicTo(w * 0.53, h * 0.18, w * 0.62, h * 0.08, w * 0.75, h * 0.12)
+      ..cubicTo(w * 1.06, h * 0.22, w * 0.92, h * 0.62, w * 0.5, h * 0.94)
+      ..close();
+    canvas.drawPath(path, Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(covariant _HeartPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 String _friendlyError(String raw) {
