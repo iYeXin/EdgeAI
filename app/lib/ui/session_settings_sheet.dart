@@ -30,11 +30,13 @@ class SessionSettingsSheet extends StatefulWidget {
     required this.session,
     required this.defaultSystemPrompt,
     required this.defaultMaxTokens,
+    this.maxTokensLimit = 131072,
   });
 
   final ChatSession session;
   final String defaultSystemPrompt;
   final int defaultMaxTokens;
+  final int maxTokensLimit;
 
   @override
   State<SessionSettingsSheet> createState() => _SessionSettingsSheetState();
@@ -165,14 +167,20 @@ class _SessionSettingsSheetState extends State<SessionSettingsSheet> {
                             label: '最大输出',
                             value: '$_maxTokens tok',
                             slider: Slider(
-                              value: _maxTokens.toDouble(),
+                              value: _maxTokens
+                                  .clamp(64, widget.maxTokensLimit)
+                                  .toDouble(),
                               min: 64,
-                              max: 1024,
-                              divisions: 15,
+                              max: widget.maxTokensLimit.toDouble(),
+                              divisions: null,
                               onChanged: (v) => setState(
                                 () => _maxTokens = (v / 64).round() * 64,
                               ),
                             ),
+                          ),
+                          Text(
+                            '模型上下文上限 ${widget.maxTokensLimit} tokens',
+                            style: AppText.small,
                           ),
                         ],
                       ),
@@ -200,7 +208,10 @@ class _SessionSettingsSheetState extends State<SessionSettingsSheet> {
                             topP: _topP,
                             topK: _topK,
                             repeatPenalty: _repeatPenalty,
-                            maxTokens: _maxTokens,
+                            maxTokens: _maxTokens.clamp(
+                              64,
+                              widget.maxTokensLimit,
+                            ),
                             remember: _remember,
                           ),
                         );

@@ -757,20 +757,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         SchedulerPolicy(
           backend: _backend,
           threads: _threads,
-          maxContext: _mmprojPath != null
-              ? 4096
-              : (_contextSize == 0 ? 32768 : _contextSize),
+          maxContext: _contextSize > 0 ? _contextSize : 1 << 20,
         ),
       );
-      final visionCap = _mmprojPath != null && _contextSize == 0
-          ? 4096
-          : _contextSize;
       final info = await scheduler.ensureLoaded(
         ModelSpec(id: path, path: path, mmprojPath: _mmprojPath),
-        contextSize: visionCap,
-        maxContext: _mmprojPath != null
-            ? 4096
-            : (_contextSize == 0 ? 32768 : _contextSize),
+        contextSize: _contextSize,
+        maxContext: _contextSize > 0 ? _contextSize : 1 << 20,
         memoryBudgetBytes: _memoryBudgetMb > 0
             ? _memoryBudgetMb * 1024 * 1024
             : null,
@@ -885,6 +878,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               'tokens': '${stats.generatedTokens}',
               'prefill_ms': '${stats.prefillMs}',
               'dropped': '${_lastPlan?.droppedMessages ?? 0}',
+              'stop': stats.stopReason.name,
             };
             if (last.text.trim().isEmpty) {
               last.text = last.cancelled
@@ -1921,6 +1915,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         session: session,
         defaultSystemPrompt: _systemPrompt,
         defaultMaxTokens: _maxTokens,
+        maxTokensLimit: _info?.nCtxTrain ?? 131072,
       ),
     );
     if (value == null) return;
@@ -3150,8 +3145,9 @@ class _MessageBubble extends StatelessWidget {
     final suffix = cancelled ? ' · stopped' : '';
     final dropped = int.tryParse(stats['dropped'] ?? '') ?? 0;
     final droppedPart = dropped > 0 ? ' · trimmed $dropped' : '';
+    final stopPart = stats['stop'] == 'maxTokens' ? ' · 已达到输出上限' : '';
     final powerPart = power == null ? '' : '\n$power';
-    return '$backend · $tokS tok/s · $tokens tok · $prefill$droppedPart$suffix$powerPart';
+    return '$backend · $tokS tok/s · $tokens tok · $prefill$droppedPart$suffix$stopPart$powerPart';
   }
 }
 

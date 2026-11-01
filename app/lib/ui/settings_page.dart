@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../engine/edge_ai.dart';
 import 'chat_page_controller.dart';
@@ -78,6 +79,76 @@ class _SettingsPageState extends State<SettingsPage> {
   BorderSide _chipSide(bool selected) =>
       BorderSide(color: selected ? AppColors.primary : AppColors.line);
 
+  Future<int?> _askNumber({
+    required String title,
+    required int initial,
+    required int min,
+    required int max,
+    required String suffix,
+  }) async {
+    final controller = TextEditingController(text: '$initial');
+    final value = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          decoration: InputDecoration(
+            suffixText: suffix,
+            helperText: '范围 $min–$max',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              final parsed = int.tryParse(controller.text);
+              if (parsed == null) return;
+              Navigator.pop(dialogContext, parsed.clamp(min, max));
+            },
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return value;
+  }
+
+  Future<void> _customContext() async {
+    final limit = (widget.controller.info?.nCtxTrain ?? 0) > 0
+        ? widget.controller.info!.nCtxTrain
+        : 1048576;
+    final value = await _askNumber(
+      title: '自定义上下文',
+      initial: _context > 0 ? _context : 32768,
+      min: 64,
+      max: limit,
+      suffix: 'tokens',
+    );
+    if (value != null) _mark(() => _context = value);
+  }
+
+  Future<void> _customMaxTokens() async {
+    final limit = (widget.controller.info?.nCtxTrain ?? 0) > 0
+        ? widget.controller.info!.nCtxTrain
+        : 131072;
+    final value = await _askNumber(
+      title: '自定义最大输出',
+      initial: _maxTokens,
+      min: 64,
+      max: limit,
+      suffix: 'tokens',
+    );
+    if (value != null) _mark(() => _maxTokens = value);
+  }
+
   Future<void> _apply() async {
     widget.controller.applySettings(
       InferenceSettings(
@@ -85,7 +156,12 @@ class _SettingsPageState extends State<SettingsPage> {
         threads: _threads,
         contextSize: _context,
         memoryBudgetMb: _memory,
-        maxTokens: _maxTokens,
+        maxTokens: _maxTokens.clamp(
+          64,
+          (widget.controller.info?.nCtxTrain ?? 0) > 0
+              ? widget.controller.info!.nCtxTrain
+              : 131072,
+        ),
         thinking: _thinking,
       ),
     );
@@ -105,6 +181,11 @@ class _SettingsPageState extends State<SettingsPage> {
     return AnimatedBuilder(
       animation: widget.controller,
       builder: (context, _) {
+        final modelCtxLimit = widget.controller.info?.nCtxTrain ?? 0;
+        final maxOutputLimit = modelCtxLimit > 0 ? modelCtxLimit : 131072;
+        final contextValues = <int>{0, 4096, 8192, 16384, 32768};
+        if (_context > 0) contextValues.add(_context);
+        if (modelCtxLimit > 0) contextValues.add(modelCtxLimit);
         return Scaffold(
           backgroundColor: AppColors.background,
           appBar: AppBar(
@@ -134,7 +215,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: Text(
                           '模型 ${(widget.controller.info!.modelBytes / (1024 * 1024)).round()} MB · '
                           'KV ${(widget.controller.info!.kvBytes / (1024 * 1024)).round()} MB · '
-                          'ctx ${widget.controller.info!.nCtx}',
+                          'ctx ${widget.controller.info!.nCtx} / 模型上限 ${widget.controller.info!.nCtxTrain}',
                           style: AppText.small,
                         ),
                       ),
@@ -198,9 +279,15 @@ class _SettingsPageState extends State<SettingsPage> {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        for (final value in const [0, 4096, 8192, 16384, 32768])
+                        for (final value in contextValues)
                           ChoiceChip(
-                            label: Text(value == 0 ? '自动' : '$value'),
+                            label: Text(
+                              value == 0
+                                  ? '自动'
+                                  : value == modelCtxLimit
+                                  ? '模型上限 $value'
+                                  : '$value',
+                            ),
                             selected: _context == value,
                             showCheckmark: false,
                             selectedColor: AppColors.primaryWash,
@@ -208,8 +295,21 @@ class _SettingsPageState extends State<SettingsPage> {
                             side: _chipSide(_context == value),
                             onSelected: (_) => _mark(() => _context = value),
                           ),
+                        ActionChip(
+                          avatar: const Icon(Icons.edit_outlined, size: 15),
+                          label: const Text('自定义'),
+                          onPressed: _customContext,
+                        ),
                       ],
                     ),
+                    if (modelCtxLimit > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          '模型训练上下文上限 $modelCtxLimit tokens',
+                          style: AppText.small,
+                        ),
+                      ),
                     const SizedBox(height: 16),
                     const Text('内存预算', style: AppText.small),
                     const SizedBox(height: 8),
@@ -234,6 +334,10 @@ class _SettingsPageState extends State<SettingsPage> {
                       children: [
                         const Text('最大输出', style: AppText.small),
                         const Spacer(),
+                        TextButton(
+                          onPressed: _customMaxTokens,
+                          child: const Text('自定义'),
+                        ),
                         Text(
                           '$_maxTokens tok',
                           style: AppText.smallStrong.copyWith(
@@ -243,12 +347,16 @@ class _SettingsPageState extends State<SettingsPage> {
                       ],
                     ),
                     Slider(
-                      value: _maxTokens.toDouble(),
+                      value: _maxTokens.clamp(64, maxOutputLimit).toDouble(),
                       min: 64,
-                      max: 1024,
-                      divisions: 15,
+                      max: maxOutputLimit.toDouble(),
+                      divisions: null,
                       onChanged: (v) =>
                           _mark(() => _maxTokens = (v / 64).round() * 64),
+                    ),
+                    Text(
+                      '可设置到模型上下文上限 $maxOutputLimit tokens；实际可用长度还受 prompt 占用影响。',
+                      style: AppText.small,
                     ),
                     const SizedBox(height: 8),
                     AppPrimaryButton(label: '应用并重载', onPressed: _apply),
