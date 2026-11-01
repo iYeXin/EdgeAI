@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'core/app_theme.dart';
@@ -2784,13 +2784,19 @@ class _MessageText extends StatelessWidget {
           if (parsed.answer.isNotEmpty)
             Padding(
               padding: EdgeInsets.only(top: parsed.hasThinking ? 8 : 0),
-              child: SelectableText(
-                '${parsed.answer}▍',
+              child: GptMarkdown(
+                parsed.answer,
+                isStreaming: true,
+                animation: GptMarkdownAnimation.fade,
+                charactersPerSecond: 420,
+                useDollarSignsForLatex: true,
                 style: const TextStyle(
                   color: _text,
                   fontSize: 14.5,
                   height: 1.42,
                 ),
+                onLinkTap: (url, title) => _copyLink(context, url),
+                onCodeCopy: (code) => _copyCode(context),
               ),
             )
           else if (!parsed.hasThinking)
@@ -2810,31 +2816,43 @@ class _MessageText extends StatelessWidget {
         if (parsed.answer.isNotEmpty)
           Padding(
             padding: EdgeInsets.only(top: parsed.hasThinking ? 10 : 0),
-            child: MarkdownBody(
-              data: parsed.answer,
-              selectable: true,
-              fitContent: true,
-              styleSheet: _markdownStyle(),
-              sizedImageBuilder: (config) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Text(
-                  '[图片] ${config.alt ?? config.uri.toString()}',
-                  style: const TextStyle(color: _muted, fontSize: 12.5),
+            child: SelectionArea(
+              child: GptMarkdown(
+                parsed.answer,
+                isStreaming: false,
+                animation: GptMarkdownAnimation.none,
+                useDollarSignsForLatex: true,
+                style: const TextStyle(
+                  color: _text,
+                  fontSize: 14.5,
+                  height: 1.5,
                 ),
+                onLinkTap: (url, title) => _copyLink(context, url),
+                onCodeCopy: (code) => _copyCode(context),
               ),
-              onTapLink: (text, href, title) {
-                if (href == null || href.isEmpty) return;
-                Clipboard.setData(ClipboardData(text: href));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('链接已复制：$href'),
-                    backgroundColor: AppColors.primaryDeep,
-                  ),
-                );
-              },
             ),
           ),
       ],
+    );
+  }
+
+  void _copyLink(BuildContext context, String url) {
+    if (url.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: url));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('链接已复制：$url'),
+        backgroundColor: AppColors.primaryDeep,
+      ),
+    );
+  }
+
+  void _copyCode(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('代码已复制'),
+        backgroundColor: AppColors.primaryDeep,
+      ),
     );
   }
 }
@@ -3002,55 +3020,6 @@ class _ThinkingPanelState extends State<_ThinkingPanel> {
       ],
     );
   }
-}
-
-MarkdownStyleSheet _markdownStyle() {
-  const body = TextStyle(color: _text, fontSize: 14.5, height: 1.5);
-  return MarkdownStyleSheet(
-    p: body,
-    h1: body.copyWith(fontSize: 21, fontWeight: FontWeight.w700, height: 1.25),
-    h2: body.copyWith(fontSize: 18, fontWeight: FontWeight.w700, height: 1.28),
-    h3: body.copyWith(fontSize: 16, fontWeight: FontWeight.w700, height: 1.3),
-    h4: body.copyWith(fontSize: 14.5, fontWeight: FontWeight.w700),
-    h5: body.copyWith(fontSize: 13.5, fontWeight: FontWeight.w700),
-    h6: body.copyWith(
-      fontSize: 12.5,
-      fontWeight: FontWeight.w700,
-      color: _muted,
-    ),
-    strong: body.copyWith(fontWeight: FontWeight.w700),
-    em: body.copyWith(fontStyle: FontStyle.italic),
-    del: body.copyWith(decoration: TextDecoration.lineThrough),
-    a: body.copyWith(color: _accent, decoration: TextDecoration.underline),
-    code: const TextStyle(
-      color: AppColors.primaryDeep,
-      backgroundColor: AppColors.primaryWash,
-      fontFamily: 'monospace',
-      fontSize: 13,
-      height: 1.45,
-    ),
-    codeblockDecoration: BoxDecoration(
-      color: AppColors.surfaceTint,
-      borderRadius: BorderRadius.circular(AppRadius.sm),
-      border: Border.all(color: AppColors.line),
-    ),
-    codeblockPadding: const EdgeInsets.all(11),
-    blockquote: body.copyWith(color: AppColors.muted),
-    blockquoteDecoration: const BoxDecoration(
-      color: AppColors.primaryWash,
-      border: Border(left: BorderSide(color: AppColors.primary, width: 3)),
-    ),
-    blockquotePadding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
-    listBullet: body,
-    listIndent: 18,
-    tableHead: body.copyWith(fontWeight: FontWeight.w700),
-    tableBody: body,
-    tableBorder: TableBorder.all(color: AppColors.line),
-    tableCellsPadding: const EdgeInsets.all(6),
-    horizontalRuleDecoration: const BoxDecoration(
-      border: Border(top: BorderSide(color: AppColors.line)),
-    ),
-  );
 }
 
 class _MessageBubble extends StatelessWidget {
