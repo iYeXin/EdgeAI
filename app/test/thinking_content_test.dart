@@ -40,6 +40,17 @@ void main() {
     expect(parsed.answer, '结果');
   });
 
+  test('accepts gemma channel thought blocks', () {
+    final parsed = ThinkingContent.parse(
+      '<|channel>thought Thinking Process:\n'
+      '1. Analyze the request.\n'
+      '<|channel|>9.9 大。',
+    );
+    expect(parsed.thinking, contains('Thinking Process'));
+    expect(parsed.thinking, contains('Analyze the request'));
+    expect(parsed.answer, '9.9 大。');
+  });
+
   test('plain assistant output is unchanged', () {
     final parsed = ThinkingContent.parse('普通回答，不包含思考标签。');
     expect(parsed.hasThinking, isFalse);

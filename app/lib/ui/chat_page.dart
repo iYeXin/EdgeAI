@@ -39,6 +39,13 @@ class _PromptEditResult {
   final bool applyGlobal;
 }
 
+class _EditMessageResult {
+  const _EditMessageResult({required this.text, required this.images});
+
+  final String text;
+  final List<String> images;
+}
+
 class ChatMessage {
   ChatMessage.user(
     this.text, {
@@ -111,6 +118,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool _loaded = false;
   String? _loadError;
   bool _generating = false;
+  bool _pickingImage = false;
 
   ComputeBackend _backend = ComputeBackend.vulkan;
   int _threads = 4;
@@ -924,6 +932,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   Future<void> _pickImage() async {
+    final paths = await _pickImagesFromGallery();
+    if (!mounted || paths.isEmpty) return;
+    setState(() {
+      for (final path in paths) {
+        if (_pendingImagePaths.length >= 4) break;
+        if (!_pendingImagePaths.contains(path)) {
+          _pendingImagePaths.add(path);
+        }
+      }
+      _pendingImagePath = _pendingImagePaths.isEmpty
+          ? null
+          : _pendingImagePaths.first;
+    });
+  }
+
+  Future<List<String>> _pickImagesFromGallery() async {
+    if (_pickingImage) return const <String>[];
+    _pickingImage = true;
+    if (mounted) setState(() {});
     try {
       final compress = _sessionStore?.imageCompressionEnabled ?? true;
       final maxWidth = (_sessionStore?.imageMaxWidth ?? 1024).toDouble();
@@ -931,21 +958,59 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         maxWidth: compress ? maxWidth : null,
         imageQuality: compress ? 88 : null,
       );
-      if (picked.isEmpty || !mounted) return;
-      setState(() {
-        for (final file in picked) {
-          if (_pendingImagePaths.length >= 4) break;
-          if (!_pendingImagePaths.contains(file.path)) {
-            _pendingImagePaths.add(file.path);
-          }
-        }
-        _pendingImagePath = _pendingImagePaths.isEmpty
-            ? null
-            : _pendingImagePaths.first;
-      });
-    } catch (error) {
-      _showError('无法打开相册：$error');
+      return picked.map((file) => file.path).toList();
+    } on PlatformException catch (error) {
+      if (error.code == 'already_active') {
+        _showError('相册正在打开，请稍后再试。');
+      } else {
+        _showError('无法打开相册：${error.message ?? error.code}');
+      }
+      return const <String>[];
+    } catch (_) {
+      _showError('无法打开相册，请稍后再试。');
+      return const <String>[];
+    } finally {
+      _pickingImage = false;
+      if (mounted) setState(() {});
     }
+  }
+
+  Future<void> _openImagePreview(String path) async {
+    if (!File(path).existsSync()) {
+      _showError('图片文件不存在');
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.94),
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(12),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                minScale: 0.8,
+                maxScale: 5,
+                child: Image.file(File(path), fit: BoxFit.contain),
+              ),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: IconButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black54,
+                  foregroundColor: Colors.white,
+                ),
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadStateIfNeeded() async {
@@ -1250,40 +1315,176 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   Future<void> _editMessage(StoredMessage node) async {
+    if (_generating) return;
     final controller = TextEditingController(text: node.text);
-    final text = await showDialog<String>(
+    final images = List<String>.of(node.imagePaths);
+    var picking = false;
+
+    final result = await showModalBottomSheet<_EditMessageResult>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: _surface,
-        title: const Text('编辑消息'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: 6,
-          minLines: 3,
-          decoration: const InputDecoration(hintText: '输入新的内容'),
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: _surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    const Text(
+                      '编辑消息',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close_rounded, color: _muted),
+                    ),
+                  ],
+                ),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    hintText: '输入新的内容',
+                    alignLabelWithHint: true,
+                  ),
+                ),
+                if (images.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (var i = 0; i < images.length; i++)
+                        Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            GestureDetector(
+                              onTap: () => _openImagePreview(images[i]),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(9),
+                                child: Image.file(
+                                  File(images[i]),
+                                  width: 72,
+                                  height: 72,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              right: -5,
+                              top: -5,
+                              child: GestureDetector(
+                                onTap: () =>
+                                    setSheetState(() => images.removeAt(i)),
+                                child: Container(
+                                  decoration: const BoxDecoration(
+                                    color: Colors.black87,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  padding: const EdgeInsets.all(2),
+                                  child: const Icon(
+                                    Icons.close_rounded,
+                                    size: 13,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: picking || images.length >= 4
+                      ? null
+                      : () async {
+                          setSheetState(() => picking = true);
+                          final paths = await _pickImagesFromGallery();
+                          if (!sheetContext.mounted) return;
+                          setSheetState(() {
+                            for (final path in paths) {
+                              if (images.length >= 4) break;
+                              if (!images.contains(path)) images.add(path);
+                            }
+                            picking = false;
+                          });
+                        },
+                  icon: picking
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(
+                          Icons.add_photo_alternate_outlined,
+                          size: 18,
+                        ),
+                  label: Text(
+                    images.length >= 4 ? '最多 4 张图片' : '添加图片',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        child: const Text('取消'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () {
+                          final text = controller.text.trim();
+                          if (text.isEmpty && images.isEmpty) return;
+                          Navigator.pop(
+                            sheetContext,
+                            _EditMessageResult(
+                              text: text,
+                              images: List<String>.of(images),
+                            ),
+                          );
+                        },
+                        child: const Text('生成'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('生成'),
-          ),
-        ],
       ),
     );
     controller.dispose();
-    if (!mounted || _generating) return;
-    final value = text?.trim() ?? '';
-    if (value.isEmpty) return;
+    if (!mounted || result == null || _generating) return;
+    if (result.text.isEmpty && result.images.isEmpty) return;
     final user = _newNode(
       role: 'user',
-      text: value,
+      text: result.text,
       parentId: node.parentId,
-      imagePaths: node.imagePaths,
+      imagePaths: result.images,
     );
     final assistant = _newNode(role: 'assistant', text: '', parentId: user.id);
     setState(() {
@@ -1957,6 +2158,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             controller: _input,
             generating: false,
             sendEnabled: false,
+            pickingImage: _pickingImage,
             pendingImages: _pendingImagePaths,
             onAttach: _pickImage,
             onRemoveImage: (index) => setState(() {
@@ -2087,6 +2289,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     return _MessageBubble(
                       message: message,
                       onAction: () => _showMessageActions(message),
+                      onImageTap: _openImagePreview,
                     );
                   },
                 ),
@@ -2094,6 +2297,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         _Composer(
           controller: _input,
           generating: _generating,
+          pickingImage: _pickingImage,
           pendingImages: _pendingImagePaths,
           onAttach: _pickImage,
           onRemoveImage: (index) => setState(() {
@@ -2529,6 +2733,65 @@ class _MessageText extends StatelessWidget {
   }
 }
 
+class _GeneratingIndicator extends StatefulWidget {
+  const _GeneratingIndicator();
+
+  @override
+  State<_GeneratingIndicator> createState() => _GeneratingIndicatorState();
+}
+
+class _GeneratingIndicatorState extends State<_GeneratingIndicator>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('正在生成', style: TextStyle(color: _muted, fontSize: 12)),
+            const SizedBox(width: 8),
+            for (var i = 0; i < 3; i++)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Opacity(
+                  opacity:
+                      0.25 +
+                      0.75 *
+                          (1 -
+                              ((_controller.value + i * 0.22) % 1 - 0.5).abs() *
+                                  2),
+                  child: const SizedBox(
+                    width: 5,
+                    height: 5,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: _accent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _ThinkingPanel extends StatefulWidget {
   const _ThinkingPanel({required this.text, required this.streaming});
 
@@ -2685,10 +2948,11 @@ MarkdownStyleSheet _markdownStyle() {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, this.onAction});
+  const _MessageBubble({required this.message, this.onAction, this.onImageTap});
 
   final ChatMessage message;
   final VoidCallback? onAction;
+  final ValueChanged<String>? onImageTap;
 
   @override
   Widget build(BuildContext context) {
@@ -2723,6 +2987,10 @@ class _MessageBubble extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if (!isUser &&
+                        message.streaming &&
+                        message.text.trim().isEmpty)
+                      const _GeneratingIndicator(),
                     if (message.imagePaths.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
@@ -2731,17 +2999,20 @@ class _MessageBubble extends StatelessWidget {
                           runSpacing: 6,
                           children: [
                             for (final path in message.imagePaths)
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: Image.file(
-                                  File(path),
-                                  width: message.imagePaths.length == 1
-                                      ? 220
-                                      : 104,
-                                  height: message.imagePaths.length == 1
-                                      ? 180
-                                      : 104,
-                                  fit: BoxFit.cover,
+                              GestureDetector(
+                                onTap: () => onImageTap?.call(path),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Image.file(
+                                    File(path),
+                                    width: message.imagePaths.length == 1
+                                        ? 220
+                                        : 104,
+                                    height: message.imagePaths.length == 1
+                                        ? 180
+                                        : 104,
+                                    fit: BoxFit.cover,
+                                  ),
                                 ),
                               ),
                           ],
@@ -2800,6 +3071,7 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.generating,
     this.sendEnabled = true,
+    this.pickingImage = false,
     required this.pendingImages,
     required this.onAttach,
     required this.onRemoveImage,
@@ -2810,6 +3082,7 @@ class _Composer extends StatelessWidget {
   final TextEditingController controller;
   final bool generating;
   final bool sendEnabled;
+  final bool pickingImage;
   final List<String> pendingImages;
   final Future<void> Function() onAttach;
   final void Function(int index) onRemoveImage;
@@ -2880,8 +3153,17 @@ class _Composer extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   IconButton(
-                    onPressed: generating ? null : onAttach,
-                    icon: const Icon(Icons.image_outlined),
+                    onPressed: generating || pickingImage ? null : onAttach,
+                    icon: pickingImage
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: _muted,
+                            ),
+                          )
+                        : const Icon(Icons.image_outlined),
                     color: _muted,
                     tooltip: '添加图片',
                   ),

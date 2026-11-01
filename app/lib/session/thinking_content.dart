@@ -22,7 +22,8 @@ class ThinkingContent {
   static final RegExp _openTag = RegExp(
     r'<(think|thinking|reasoning|analysis|thought)\s*>'
     r'|<\|(thinking|reasoning|analysis|think)\|>'
-    r'|\[(think|thinking|reasoning|analysis)\]',
+    r'|\[(think|thinking|reasoning|analysis)\]'
+    r'|<\|\s*channel\s*\|?>\s*(thought|analysis|reasoning)\b',
     caseSensitive: false,
   );
 
@@ -50,9 +51,16 @@ class ThinkingContent {
           ? 0
           : match.group(2) != null
           ? 1
-          : 2;
-      final tag = (match.group(1) ?? match.group(2) ?? match.group(3) ?? '')
-          .toLowerCase();
+          : match.group(3) != null
+          ? 2
+          : 3;
+      final tag =
+          (match.group(1) ??
+                  match.group(2) ??
+                  match.group(3) ??
+                  match.group(4) ??
+                  '')
+              .toLowerCase();
       final contentStart = cursor + match.end;
       final close = _closeTag(
         tag,
@@ -96,7 +104,11 @@ class ThinkingContent {
         '<\\|/\\s*$escaped\\s*\\|>|</\\|\\s*$escaped\\s*\\|>',
         caseSensitive: false,
       ),
-      _ => RegExp('\\[\\s*/\\s*$escaped\\s*\\]', caseSensitive: false),
+      2 => RegExp('\\[\\s*/\\s*$escaped\\s*\\]', caseSensitive: false),
+      _ => RegExp(
+        '<\\|\\s*/?\\s*channel\\s*\\|>|</\\|\\s*channel\\s*\\|>',
+        caseSensitive: false,
+      ),
     };
   }
 }
